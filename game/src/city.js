@@ -577,7 +577,7 @@ export class City {
   
   createPedestrianNodes() {
     const { WORLD } = CONFIG;
-    const { BUILDING_GRID, SIDEWALK_WIDTH, HALF_SIZE } = WORLD;
+    const { BUILDING_GRID, STREET_WIDTH, SIDEWALK_WIDTH, HALF_SIZE } = WORLD;
     
     // Nodes along sidewalks
     const mainSpacing = BUILDING_GRID * 4;

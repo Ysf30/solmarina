@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 // Solmarina - Configuration Constants
 // All tuning numbers, colors, and game constants in one place
 
