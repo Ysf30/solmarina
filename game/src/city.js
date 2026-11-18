@@ -98,7 +98,7 @@ export class City {
   
   createSky() {
     const { PALETTE, WORLD } = CONFIG;
-    
+
     // Sky dome
     const skyGeo = new THREE.SphereGeometry(WORLD.SIZE * 2, 32, 16);
     const skyMat = new THREE.MeshBasicMaterial({
@@ -108,7 +108,7 @@ export class City {
     });
     this.sky = new THREE.Mesh(skyGeo, skyMat);
     this.scene.add(this.sky);
-    
+
     // Sun
     const sunGeo = new THREE.SphereGeometry(50, 16, 12);
     const sunMat = new THREE.MeshBasicMaterial({
@@ -118,7 +118,25 @@ export class City {
     this.sun = new THREE.Mesh(sunGeo, sunMat);
     this.sun.position.set(-300, 400, -300);
     this.scene.add(this.sun);
-    
+
+    // Sun light (directional with shadows)
+    this.sunLight = new THREE.DirectionalLight(0xffffff, 1);
+    this.sunLight.position.set(-300, 400, -300);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.width = 2048;
+    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.camera.near = 1;
+    this.sunLight.shadow.camera.far = 1000;
+    this.sunLight.shadow.camera.left = -500;
+    this.sunLight.shadow.camera.right = 500;
+    this.sunLight.shadow.camera.top = 500;
+    this.sunLight.shadow.camera.bottom = -500;
+    this.scene.add(this.sunLight);
+
+    // Ambient light (hemisphere for ground/sky color)
+    this.ambientLight = new THREE.HemisphereLight(0x88ccff, 0x443322, 0.6);
+    this.scene.add(this.ambientLight);
+
     // Fog
     this.scene.fog = new THREE.FogExp2(PALETTE.FOG_DAY, 0.0008);
   }
@@ -650,6 +668,9 @@ export class City {
   
   // Update animated elements
   update(delta, timeOfDay) {
+    // Accumulate elapsed time for animations
+    this.elapsed = (this.elapsed || 0) + delta;
+
     // Water animation
     if (this.water) {
       this.water.userData.time += delta;
@@ -660,47 +681,54 @@ export class City {
         (Math.sin(t * 0.5) + 1) * 0.5 * 0.3
       );
     }
-    
+
+    // Day factor for time of day (0 = night, 1 = day)
+    const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
+    const angle = timeOfDay * Math.PI * 2;
+
     // Sky color based on time of day
     if (this.sky) {
-      const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
-      const skyColor = new THREE.Color().lerpColors(
-        CONFIG.PALETTE.SKY_NIGHT,
-        CONFIG.PALETTE.SKY_DAY,
-        dayFactor
-      );
+      // Use setHex for reliable color interpolation
+      const nightColor = new THREE.Color(CONFIG.PALETTE.SKY_NIGHT);
+      const dayColor = new THREE.Color(CONFIG.PALETTE.SKY_DAY);
+      const skyColor = new THREE.Color().lerpColors(nightColor, dayColor, dayFactor);
       this.sky.material.color.copy(skyColor);
-      
+
       // Fog color
-      this.scene.fog.color.lerpColors(
-        CONFIG.PALETTE.FOG_NIGHT,
-        CONFIG.PALETTE.FOG_DAY,
-        dayFactor
-      );
+      const fogNight = new THREE.Color(CONFIG.PALETTE.FOG_NIGHT);
+      const fogDay = new THREE.Color(CONFIG.PALETTE.FOG_DAY);
+      this.scene.fog.color.lerpColors(fogNight, fogDay, dayFactor);
     }
-    
+
     // Sun position
     if (this.sun) {
-      const angle = timeOfDay * Math.PI * 2;
       this.sun.position.set(
         Math.cos(angle) * 400,
         Math.sin(angle) * 400 + 200,
         Math.sin(angle) * 300
       );
-      
+
       // Sun color
-      const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
-      this.sun.material.color.lerpColors(
-        CONFIG.PALETTE.SKY_NIGHT,
-        CONFIG.PALETTE.SUN_COLOR,
-        dayFactor
-      );
+      const sunNight = new THREE.Color(CONFIG.PALETTE.SKY_NIGHT);
+      const sunDay = new THREE.Color(CONFIG.PALETTE.SUN_COLOR);
+      this.sun.material.color.lerpColors(sunNight, sunDay, dayFactor);
+
+      if (this.ambientLight) {
+        this.ambientLight.intensity = 0.6 * dayFactor + 0.2;
+        this.ambientLight.color.setHSL(0.1, 0.3, 0.5 * dayFactor + 0.3);
+        this.ambientLight.groundColor.setHSL(0.6, 0.2, 0.1 * dayFactor + 0.05);
+      }
     }
-    
+
+    // Update sun light position to match sun
+    if (this.sunLight) {
+      this.sunLight.position.copy(this.sun.position);
+    }
+
     // Streetlight glow pulse
     for (const light of this.streetlights) {
       if (light.userData.glow) {
-        const intensity = 0.3 + Math.sin(time * 2 + light.position.x * 0.1) * 0.2;
+        const intensity = 0.3 + Math.sin(this.elapsed * 2 + light.position.x * 0.1) * 0.2;
         light.userData.glow.material.opacity = intensity;
       }
     }

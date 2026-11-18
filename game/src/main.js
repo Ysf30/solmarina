@@ -2,7 +2,7 @@
 
 import * as THREE from 'three';
 import { CONFIG, DAY_CYCLE } from './config.js';
-import { createInput } from './input.js';
+import { createInput, ACTION } from './input.js';
 import { initAudio, startMusic, stopMusic, setMusicMood, playMissionComplete, playWantedLevelChange } from './audio.js';
 import { City } from './city.js';
 import { Player } from './player.js';
@@ -23,6 +23,7 @@ let timeOfDay = 0.25; // Start at morning
 let isPaused = false;
 let isLoading = true;
 let lastTime = 0;
+let currentShot = null; // Track active shot preset
 
 // Shot presets for screenshots
 const SHOT_PRESETS = {
@@ -61,6 +62,7 @@ async function init() {
   // Create scene
   scene = new THREE.Scene();
   scene.background = new THREE.Color(CONFIG.PALETTE.SKY_DAY);
+
   
   // Create camera
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
@@ -114,29 +116,33 @@ async function init() {
     playMissionComplete: () => { playMissionComplete(); },
   }, hud);
   
+  // Get shot parameter early for HUD
+  const urlParams = new URLSearchParams(window.location.search);
+  const shot = urlParams.get('shot');
+  const isGameplayShot = shot && ['foot', 'drive', 'chase', 'mission'].includes(shot);
+
   // HUD needs missions, so create after
   hud = new HUD(player, city, police, missions, traffic.vehicles, {
-    playPickupSound: () => { /* audio.playPickupSound() */ },
+    playPickupSound: () => { /* audio.playPunch() */ },
     playMissionComplete: () => { playMissionComplete(); },
     playWantedLevelChange: (level) => { playWantedLevelChange(level); },
-  });
+  }, isGameplayShot);
   
   // Update missions with hud reference
   missions.hud = hud;
   
   saveSystem = new SaveSystem(player, city, missions, police, traffic.vehicles, traffic, hud);
-  
+
   // Connect player to systems
   player.city = city;
   player.audio = {
     playGunshot: (pos) => { /* audio.playGunshot(pos) */ },
     playPunch: () => { /* audio.playPunch() */ },
   };
-  
-  // Set up shot preset from URL
-  const urlParams = new URLSearchParams(window.location.search);
-  const shot = urlParams.get('shot');
+
+  // Set up shot preset from URL (shot already parsed above)
   if (shot && SHOT_PRESETS[shot]) {
+    currentShot = shot;
     SHOT_PRESETS[shot]();
   }
   
@@ -187,27 +193,29 @@ function animate(currentTime) {
 function update(delta) {
   // Update input
   input.update();
-  
+
   // Toggle pause
   if (input.isPressed(input.constructor.name === 'Object' ? 1 << 10 : 0)) {
     // Escape key handled by input system
   }
-  
+
   // Update time of day
   timeOfDay = (timeOfDay + delta / DAY_CYCLE) % 1;
-  
+
   // Update city (sky, water, lights)
   city.update(delta, timeOfDay);
-  
+
   // Update music mood based on wanted level
   if (police.wantedLevel > 0) {
     setMusicMood(police.wantedLevel >= 3 ? 'action' : 'tension');
   } else {
     setMusicMood('ambient');
   }
-  
-  // Update player
-  player.update(delta, camera);
+
+  // Update player (skip for start shot - camera is fixed)
+  if (currentShot !== 'start') {
+    player.update(delta, camera);
+  }
   
   // Update traffic
   traffic.update(delta, timeOfDay);
@@ -228,7 +236,7 @@ function update(delta) {
   hud.update(delta);
   
   // Handle player shooting
-  if (player.input.isDown(input.ACTION.SHOOT) && player.isAiming && !player.inVehicle) {
+  if (player.input.isDown(ACTION.SHOOT) && player.isAiming && !player.inVehicle) {
     const shot = player.shoot();
     if (shot) {
       const result = combat.shoot(shot.origin, shot.direction, shot.damage, shot.range, shot.spread);
@@ -242,7 +250,7 @@ function update(delta) {
   }
   
   // Handle melee
-  if (player.input.isPressed(input.ACTION.ATTACK) && !player.inVehicle) {
+  if (player.input.isPressed(ACTION.ATTACK) && !player.inVehicle) {
     const melee = player.meleeAttack();
     // Simple melee hit detection
     const raycaster = new THREE.Raycaster(melee.origin, melee.direction, 0, melee.range);
@@ -276,7 +284,7 @@ function update(delta) {
   }
   
   // Vehicle enter/exit
-  if (input.isPressed(input.ACTION.ENTER_VEHICLE)) {
+  if (input.isPressed(ACTION.ENTER_VEHICLE)) {
     if (player.inVehicle) {
       player.exitVehicle();
     } else {
@@ -328,27 +336,34 @@ function showError(message) {
 // Shot preset setups
 function setupShotStart() {
   // Title screen shot - show start screen
-  timeOfDay = 0.3;
+  timeOfDay = 0.35; // Late morning for nice lighting
   player.position.set(0, 1, 0);
   player.mesh.position.copy(player.position);
   camera.position.set(0, 50, 80);
   camera.lookAt(0, 0, 0);
   // Keep start screen visible
+  // Increase exposure for screenshot
+  if (renderer) renderer.toneMappingExposure = 1.2;
 }
 
 function setupShotFoot() {
-  // On-foot gameplay shot
-  timeOfDay = 0.4;
+  // On-foot gameplay shot - face buildings at negative X
+  timeOfDay = 0.38; // Morning, good sun angle
   player.position.set(-100, 1, 50);
   player.mesh.position.copy(player.position);
-  player.mesh.rotation.y = 0;
-  camera.position.set(-100, 5, 54);
-  camera.lookAt(-100, 1.6, 50);
+  player.mesh.rotation.y = -Math.PI / 2; // Face -X direction (towards buildings)
+  player.targetRotation = -Math.PI / 2;
+  // Camera will be set by player.updateCamera()
+  // Hide start screen for gameplay
+  const startScreen = document.getElementById('startScreen');
+  if (startScreen) startScreen.remove();
+  // Increase exposure for screenshot
+  if (renderer) renderer.toneMappingExposure = 1.3;
 }
 
 function setupShotDrive() {
   // Driving shot
-  timeOfDay = 0.5;
+  timeOfDay = 0.4; // Mid-morning
   const vehicle = new Vehicle(scene, city, {
     playEngineSound: () => {},
     stopEngineSound: () => {},
@@ -357,16 +372,21 @@ function setupShotDrive() {
   vehicle.position.set(200, 0.5, -100);
   vehicle.rotation = -Math.PI / 4;
   vehicle.engineOn = true;
+  vehicle.speed = 25; // Moving for motion blur effect
   player.enterVehicle(vehicle);
   traffic.vehicles.push(vehicle);
-  
-  camera.position.set(200, 8, -92);
-  camera.lookAt(200, 1.2, -100);
+
+  // Camera will be set by player.updateInVehicle()
+  // Hide start screen for gameplay
+  const startScreen = document.getElementById('startScreen');
+  if (startScreen) startScreen.remove();
+  // Increase exposure for screenshot
+  if (renderer) renderer.toneMappingExposure = 1.3;
 }
 
 function setupShotChase() {
-  // Police chase shot - cover screenshot
-  timeOfDay = 0.6;
+  // Police chase shot - cover screenshot (SUNSET with dramatic police lights)
+  timeOfDay = 0.7; // Sunset - dark sky, police lights will be very visible (red/blue)
   const vehicle = new Vehicle(scene, city, {
     playEngineSound: () => {},
     stopEngineSound: () => {},
@@ -378,7 +398,7 @@ function setupShotChase() {
   vehicle.speed = 30;
   player.enterVehicle(vehicle);
   traffic.vehicles.push(vehicle);
-  
+
   // Spawn police behind
   for (let i = 0; i < 3; i++) {
     const cop = new Vehicle(scene, city, {
@@ -394,27 +414,37 @@ function setupShotChase() {
     cop.isPolice = true;
     police.policeCars.push(cop);
   }
-  
+
   police.setWantedLevel(3);
-  
-  camera.position.set(0, 6, 20);
-  camera.lookAt(0, 1, 0);
+
+  // Camera will be set by player.updateInVehicle()
+  // Hide start screen for gameplay
+  const startScreen = document.getElementById('startScreen');
+  if (startScreen) startScreen.remove();
+  // Very high exposure for sunset police lights
+  if (renderer) renderer.toneMappingExposure = 2.0;
 }
 
 function setupShotMission() {
-  // Mission gameplay shot
-  timeOfDay = 0.7;
-  player.position.set(-380, 1, -320);
+  // Mission gameplay shot - different location (industrial area)
+  timeOfDay = 0.2; // Very early morning - distinct cool/blue tones
+  player.position.set(320, 1, 120); // Industrial district pickup location
   player.mesh.position.copy(player.position);
-  
+  player.mesh.rotation.y = -Math.PI / 4; // Face towards dropoff
+  player.targetRotation = -Math.PI / 4;
+
   // Activate a mission
   missions.activeMission = missions.missions[1]; // pickup mission
   missions.activeMission.currentObjective = 1;
   hud.setObjective('Deliver the package to the safehouse');
   hud.setWaypoint(new THREE.Vector3(-380, 0, -320));
-  
-  camera.position.set(-380, 5, -324);
-  camera.lookAt(-380, 1.6, -320);
+
+  // Camera will be set by player.updateCamera()
+  // Hide start screen for gameplay
+  const startScreen = document.getElementById('startScreen');
+  if (startScreen) startScreen.remove();
+  // Increase exposure for screenshot
+  if (renderer) renderer.toneMappingExposure = 1.4;
 }
 
 // Initialize on load

@@ -133,7 +133,7 @@ export class Player {
     this.handleInput(delta);
     this.updatePhysics(delta);
     this.updateAnimation(delta);
-    this.updateCamera(camera);
+    this.updateCamera(camera, delta);
     this.updateHealthRegen(delta);
     this.updateMesh();
   }
@@ -310,26 +310,26 @@ export class Player {
     this.mesh.rotation.y += normalizedDiff * 0.15;
   }
   
-  updateCamera(camera) {
+  updateCamera(camera, delta) {
     const { CAMERA } = CONFIG;
     const offset = this.isAiming ? new THREE.Vector3(1.5, 1.6, 2) : CAMERA.FOOT_OFFSET.clone();
     const distance = this.isAiming ? 2 : CAMERA.FOOT_DISTANCE;
     const height = CAMERA.FOOT_HEIGHT;
-    
+
     // Camera target (look at point)
     const forward = new THREE.Vector3(Math.sin(this.mesh.rotation.y), 0, Math.cos(this.mesh.rotation.y));
     this.cameraTarget.copy(this.position).add(new THREE.Vector3(0, CAMERA.FOOT_HEIGHT, 0)).add(forward.clone().multiplyScalar(CAMERA.LOOK_AHEAD));
-    
+
     // Desired camera position
     const desiredPos = this.cameraTarget.clone().sub(forward.clone().multiplyScalar(distance));
     desiredPos.y += height;
-    
+
     // Add offset for aiming
     if (this.isAiming) {
       const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
       desiredPos.add(right.multiplyScalar(1.5));
     }
-    
+
     // Lerp
     camera.position.lerp(desiredPos, 1 - Math.exp(-CAMERA.LERP_SPEED * delta));
     camera.lookAt(this.cameraTarget);

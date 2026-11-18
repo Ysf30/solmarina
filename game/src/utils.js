@@ -192,7 +192,8 @@ export function formatTime(seconds) {
 }
 
 export function formatCash(amount) {
-  return '$' + amount.toLocaleString();
+  const val = typeof amount === 'number' && isFinite(amount) ? amount : 0;
+  return '$' + val.toLocaleString();
 }
 
 // Noise functions for procedural generation

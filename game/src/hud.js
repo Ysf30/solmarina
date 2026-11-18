@@ -1,17 +1,18 @@
 // Solmarina - HUD System
 
+import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { formatCash, formatTime } from './utils.js';
 
 export class HUD {
-  constructor(player, city, police, missions, vehicles, audio) {
+  constructor(player, city, police, missions, vehicles, audio, isGameplayShot = false) {
     this.player = player;
     this.city = city;
     this.police = police;
     this.missions = missions;
     this.vehicles = vehicles;
     this.audio = audio;
-    
+
     // State
     this.waypoint = null;
     this.objectiveText = '';
@@ -19,35 +20,37 @@ export class HUD {
     this.messageTimer = 0;
     this.timerValue = 0;
     this.showTimer = false;
-    
+
     // Create DOM elements
     this.createElements();
-    
+
     // Minimap canvas
     this.minimapCanvas = document.createElement('canvas');
     this.minimapCanvas.width = CONFIG.HUD.MINIMAP_SIZE;
     this.minimapCanvas.height = CONFIG.HUD.MINIMAP_SIZE;
     this.minimapCtx = this.minimapCanvas.getContext('2d');
     this.minimapContainer.appendChild(this.minimapCanvas);
-    
-    // Start screen
-    this.createStartScreen();
-    
+
+    // Start screen (skip for gameplay shots)
+    if (!isGameplayShot) {
+      this.createStartScreen();
+    }
+
     // Pause overlay
     this.createPauseOverlay();
-    
+
     // Save indicator
     this.saveIndicator = document.createElement('div');
     this.saveIndicator.id = 'saveIndicator';
     this.saveIndicator.style.cssText = `
-      position: fixed; bottom: 20px; right: 20px; 
+      position: fixed; bottom: 20px; right: 20px;
       background: rgba(0,0,0,0.7); color: #22cc44;
       padding: 8px 16px; border-radius: 4px; font-family: monospace;
       font-size: 14px; display: none; z-index: 50;
     `;
     this.saveIndicator.textContent = 'Game Saved';
     document.body.appendChild(this.saveIndicator);
-    
+
     // Hide loading screen
     const loading = document.getElementById('loading');
     if (loading) loading.style.display = 'none';
@@ -274,7 +277,7 @@ export class HUD {
   }
   
   startNewGame() {
-    this.startScreen.style.display = 'none';
+    if (this.startScreen) this.startScreen.style.display = 'none';
     this.player.cash = 0;
     this.missions.cash = 0;
     this.missions.completedMissions = [];
@@ -284,7 +287,7 @@ export class HUD {
   }
   
   continueGame() {
-    this.startScreen.style.display = 'none';
+    if (this.startScreen) this.startScreen.style.display = 'none';
     this.loadGame();
   }
   
@@ -317,8 +320,8 @@ export class HUD {
   
   returnToMainMenu() {
     this.pauseOverlay.style.display = 'none';
-    this.startScreen.style.display = 'flex';
-    document.getElementById('btnContinue').style.display = 'block';
+    if (this.startScreen) this.startScreen.style.display = 'flex';
+    const btnContinue = document.getElementById('btnContinue'); if (btnContinue) btnContinue.style.display = 'block';
     // Reset game state
     window.dispatchEvent(new CustomEvent('gamereset'));
   }

@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { createMaterial, createStandardMaterial, clamp, lerpVec3 } from './utils.js';
+import { ACTION } from './input.js';
 
 export class Vehicle {
   constructor(scene, city, audio, type = 'sedan', color = null) {
@@ -36,11 +37,11 @@ export class Vehicle {
     
     // Visual
     this.color = color || CONFIG.PALETTE.VEHICLE_COLORS[Math.floor(Math.random() * CONFIG.PALETTE.VEHICLE_COLORS.length)];
+    this.wheelPositions = []; // Will be populated by createMesh
     this.createMesh();
-    
+
     // Wheels for visual
     this.wheelMeshes = [];
-    this.wheelPositions = [];
     this.createWheels();
     
     // Skid marks
@@ -213,21 +214,28 @@ export class Vehicle {
     const wheelMat = createStandardMaterial(0x1a1a1a);
     const rimGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.21, 10);
     const rimMat = createStandardMaterial(0x8a8a8a);
-    
+
     for (let i = 0; i < 4; i++) {
       const wheelGroup = new THREE.Group();
-      
+
       const tire = new THREE.Mesh(wheelGeo, wheelMat);
       tire.rotation.z = Math.PI / 2;
       tire.castShadow = true;
       wheelGroup.add(tire);
-      
+
       const rim = new THREE.Mesh(rimGeo, rimMat);
       rim.rotation.z = Math.PI / 2;
       rim.castShadow = true;
       wheelGroup.add(rim);
-      
-      wheelGroup.position.copy(this.wheelPositions[i]);
+
+      // Validate wheel position to prevent NaN geometry
+      const pos = this.wheelPositions[i];
+      if (pos && isFinite(pos.x) && isFinite(pos.y) && isFinite(pos.z)) {
+        wheelGroup.position.copy(pos);
+      } else {
+        // Fallback position
+        wheelGroup.position.set((i % 2 === 0 ? -1 : 1) * 0.9, 0.3, (i < 2 ? -1 : 1) * 1.8);
+      }
       this.mesh.add(wheelGroup);
       this.wheelMeshes.push(wheelGroup);
     }
@@ -253,7 +261,6 @@ export class Vehicle {
   }
   
   processDriverInput(delta) {
-    const { ACTION } = require('./input.js');
     const input = this.driver.input;
     
     this.input.accel = input.isDown(ACTION.FORWARD) ? 1 : 0;
