@@ -13,28 +13,37 @@ let musicPlaying = false;
 let musicPattern = 0;
 let musicStep = 0;
 let musicTimer = 0;
+let muted = false;
+try { muted = localStorage.getItem('solmarina_muted') === '1'; } catch (e) { /* storage unavailable */ }
 
 export function initAudio() {
   if (audioContext) return audioContext;
-  
+
   audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  
+
   masterGain = audioContext.createGain();
-  masterGain.gain.value = CONFIG.AUDIO.MASTER_VOLUME;
+  masterGain.gain.value = muted ? 0 : CONFIG.AUDIO.MASTER_VOLUME;
   masterGain.connect(audioContext.destination);
-  
+
   musicGain = audioContext.createGain();
   musicGain.gain.value = CONFIG.AUDIO.MUSIC_VOLUME;
   musicGain.connect(masterGain);
-  
+
   sfxGain = audioContext.createGain();
   sfxGain.gain.value = CONFIG.AUDIO.SFX_VOLUME;
   sfxGain.connect(masterGain);
-  
-  // Resume on user interaction
-  document.addEventListener('click', resumeAudio, { once: true });
-  document.addEventListener('keydown', resumeAudio, { once: true });
-  
+
+  // Resume on user interaction. These listeners are PERSISTENT (not
+  // { once: true }): the context can be suspended again later (autoplay
+  // policy, tab hidden/reshown), and a one-shot listener would never
+  // resume it a second time, leaving the game silent.
+  document.addEventListener('click', resumeAudio);
+  document.addEventListener('keydown', resumeAudio);
+  document.addEventListener('pointerdown', resumeAudio);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) resumeAudio();
+  });
+
   return audioContext;
 }
 
@@ -50,8 +59,24 @@ export function getAudioContext() {
 }
 
 export function setMasterVolume(vol) {
-  if (masterGain) masterGain.gain.value = clamp(vol, 0, 1);
+  if (masterGain) masterGain.gain.value = muted ? 0 : clamp(vol, 0, 1);
 }
+
+// Mute: ramps the master gain to silence (music + SFX) and persists the
+// choice, so a muted game stays muted across reloads. Wired to the HUD
+// speaker button and the N key (see input.js ACTION.MUTE).
+export function setMuted(mute) {
+  muted = !!mute;
+  try { localStorage.setItem('solmarina_muted', muted ? '1' : '0'); } catch (e) { /* storage unavailable */ }
+  if (masterGain && audioContext) {
+    masterGain.gain.setTargetAtTime(muted ? 0 : CONFIG.AUDIO.MASTER_VOLUME, audioContext.currentTime, 0.02);
+  }
+  return muted;
+}
+
+export function toggleMute() { return setMuted(!muted); }
+
+export function isMuted() { return muted; }
 
 export function setMusicVolume(vol) {
   if (musicGain) musicGain.gain.value = clamp(vol, 0, 1);
@@ -378,8 +403,22 @@ export function setMusicMood(mood) {
   }
 }
 
-function scheduleMusic() {
-  if (!musicPlaying || !audioContext) return;
+// Track a scheduled music source so it leaves the live list when it
+// finishes playing. (The old 5s setInterval prune used the removed
+// `playbackState` / `FINISHED_STATE` API — both are undefined in modern
+// browsers, so `undefined === undefined` was true and it disconnected
+// EVERY live music node every 5 seconds, cutting notes off mid-play.)
+function trackMusicSource(src) {
+  musicOscillators.push(src);
+  src.onended = () => {
+    const i = musicOscillators.indexOf(src);
+    if (i >= 0) musicOscillators.splice(i, 1);
+    try { src.disconnect(); } catch (e) {}
+  };
+  return src;
+}
+
+function scheduleMusic() {  if (!musicPlaying || !audioContext) return;
   
   const scale = MUSIC_SCALES[musicPattern] || MUSIC_SCALES.ambient;
   const stepTime = 60 / MUSIC_TEMPO; // seconds per beat
@@ -417,7 +456,7 @@ function playMusicStep(scale, time) {
     gain.gain.exponentialRampToValueAtTime(0.001, time + 1.2);
     osc.start(time);
     osc.stop(time + 1.5);
-    musicOscillators.push(osc);
+    trackMusicSource(osc);
     musicGainNodes.push(gain, filter);
   }
   
@@ -439,7 +478,7 @@ function playMusicStep(scale, time) {
       gain.gain.exponentialRampToValueAtTime(0.001, time + 1.5);
       osc.start(time + delay);
       osc.stop(time + 1.8);
-      musicOscillators.push(osc);
+      trackMusicSource(osc);
       musicGainNodes.push(gain, filter);
     });
   }
@@ -460,7 +499,7 @@ function playMusicStep(scale, time) {
     gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
     osc.start(time);
     osc.stop(time + 0.6);
-    musicOscillators.push(osc);
+    trackMusicSource(osc);
     musicGainNodes.push(gain, filter);
   }
   
@@ -490,7 +529,7 @@ function playKick(time, vol) {
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.4);
   osc.start(time);
   osc.stop(time + 0.5);
-  musicOscillators.push(osc);
+  trackMusicSource(osc);
   musicGainNodes.push(gain);
 }
 
@@ -515,7 +554,7 @@ function playSnare(time, vol) {
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2);
   source.start(time);
   source.stop(time + 0.25);
-  musicOscillators.push(source);
+  trackMusicSource(source);
   musicGainNodes.push(gain, filter);
   
   // Tone
@@ -529,7 +568,7 @@ function playSnare(time, vol) {
   gain2.gain.exponentialRampToValueAtTime(0.001, time + 0.15);
   osc.start(time);
   osc.stop(time + 0.2);
-  musicOscillators.push(osc);
+  trackMusicSource(osc);
   musicGainNodes.push(gain2);
 }
 
@@ -553,23 +592,6 @@ function playHiHat(time, vol) {
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05);
   source.start(time);
   source.stop(time + 0.06);
-  musicOscillators.push(source);
+  trackMusicSource(source);
   musicGainNodes.push(gain, filter);
 }
-
-// Cleanup old oscillators periodically
-setInterval(() => {
-  const now = audioContext?.currentTime || 0;
-  musicOscillators = musicOscillators.filter(osc => {
-    try {
-      if (osc.playbackState === osc.FINISHED_STATE || (osc.context && osc.context.currentTime - now > 2)) {
-        osc.disconnect();
-        return false;
-      }
-    } catch (e) { return false; }
-    return true;
-  });
-  musicGainNodes = musicGainNodes.filter(g => {
-    try { return g.context === audioContext; } catch (e) { return false; }
-  });
-}, 5000);

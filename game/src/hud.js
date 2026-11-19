@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import { formatCash, formatTime } from './utils.js';
+import { toggleMute, isMuted } from './audio.js';
 
 export class HUD {
   constructor(player, city, police, missions, vehicles, audio, isGameplayShot = false) {
@@ -104,7 +105,24 @@ export class HUD {
       border: 1px solid #334; display: none;
     `;
     this.container.appendChild(this.timer);
-    
+
+    // Top-right: Mute toggle (below the timer). The HUD container has
+    // pointer-events: none, so the button re-enables them for itself.
+    this.muteButton = document.createElement('button');
+    this.muteButton.id = 'muteButton';
+    this.muteButton.title = 'Mute / unmute audio (N)';
+    this.muteButton.style.cssText = `
+      position: absolute; top: 64px; right: 16px; pointer-events: auto;
+      background: rgba(0,0,0,0.8); color: #e8dcc8; border: 1px solid #334;
+      border-radius: 4px; padding: 6px 10px; font-size: 16px; cursor: pointer;
+    `;
+    this.muteButton.addEventListener('click', () => {
+      toggleMute();
+      this.setMuteButton();
+    });
+    this.setMuteButton();
+    this.container.appendChild(this.muteButton);
+
     // Bottom-left: Health & Armor
     this.healthContainer = document.createElement('div');
     this.healthContainer.style.cssText = `
@@ -299,6 +317,11 @@ export class HUD {
     alert('Solmarina - Built for make.fun gta6-01 competition\nOriginal city, characters, vehicles, story, art, sound & music\nNo Rockstar Games content');
   }
   
+  setMuteButton() {
+    if (!this.muteButton) return;
+    this.muteButton.textContent = isMuted() ? '🔇 Muted' : '🔊 Sound';
+  }
+
   togglePause() {
     const paused = this.pauseOverlay.style.display === 'flex';
     this.pauseOverlay.style.display = paused ? 'none' : 'flex';

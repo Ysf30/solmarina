@@ -146,8 +146,13 @@ export const CONFIG = {
     WATER_NIGHT: 0x0a1a2a,
     SAND: 0xe8d5b7,
     GRASS: 0x3a6b2a,
-    ROAD: 0x2a2a2e,
-    SIDEWALK: 0x4a4a52,
+    // Road/sidewalk were near-black (0x2a2a2e): in building shadow, with
+    // ACES tonemapping, the street the player stands on rendered as a
+    // featureless black void (the on-foot shot's whole lower half). A
+    // lighter asphalt + sidewalk keeps the street readable in shadow
+    // while staying darker than the grass/buildings in sun.
+    ROAD: 0x3d3d44,
+    SIDEWALK: 0x5c5c64,
     BUILDING_BASE: [0x3a3a4a, 0x4a4a5a, 0x5a5a6a, 0x2a2a3a, 0x6a5a4a],
     BUILDING_ACCENT: [0x8a7a5a, 0x7a6a5a, 0x9a8a6a, 0x6a5a4a, 0xaa9a7a],
     WINDOW_LIT: 0xffee88,

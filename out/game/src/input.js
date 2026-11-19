@@ -17,6 +17,7 @@ export const ACTION = {
   CONFIRM: 1 << 11,
   MAP: 1 << 12,
   PHONE: 1 << 13,
+  MUTE: 1 << 14,
 };
 
 export const KEY_MAP = {
@@ -39,6 +40,7 @@ export const KEY_MAP = {
   Enter: ACTION.CONFIRM,
   KeyM: ACTION.MAP,
   KeyP: ACTION.PHONE,
+  KeyN: ACTION.MUTE,
 };
 
 export const MOUSE_BUTTON_MAP = {
@@ -83,7 +85,13 @@ export function createInput(canvas) {
     const action = MOUSE_BUTTON_MAP[e.button];
     if (action) state.actions |= action;
     if (e.button === 0 && !state.locked) {
-      canvas.requestPointerLock();
+      // requestPointerLock returns a promise in modern browsers; an
+      // unhandled rejection (e.g. called without a user gesture, or while
+      // another element holds the lock) logs a console error, so swallow it.
+      try {
+        const p = canvas.requestPointerLock();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (err) { /* pointer lock unavailable */ }
     }
   }
 
@@ -152,8 +160,12 @@ export function createInput(canvas) {
     state.mouseDeltaY = 0;
   }
 
-  canvas.addEventListener('keydown', onKeyDown);
-  canvas.addEventListener('keyup', onKeyUp);
+  // Keyboard listeners live on `window`, not the canvas: a <canvas> without
+  // a tabindex can never take keyboard focus, so keydown/keyup bound to the
+  // canvas never fired and WASD did nothing. (The canvas still gets
+  // tabindex="0" in index.html so mouse clicks can focus it.)
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
   canvas.addEventListener('mousedown', onMouseDown);
   canvas.addEventListener('mouseup', onMouseUp);
   canvas.addEventListener('mousemove', onMouseMove);
@@ -193,15 +205,20 @@ export function createInput(canvas) {
 
     isLocked() { return state.locked; },
 
-    lock() { canvas.requestPointerLock(); },
+    lock() {
+      try {
+        const p = canvas.requestPointerLock();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (err) { /* pointer lock unavailable */ }
+    },
     unlock() { document.exitPointerLock(); },
 
     on(event, fn) { return emitter.on(event, fn); },
     off(event, fn) { emitter.off(event, fn); },
 
     destroy() {
-      canvas.removeEventListener('keydown', onKeyDown);
-      canvas.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
       canvas.removeEventListener('mousedown', onMouseDown);
       canvas.removeEventListener('mouseup', onMouseUp);
       canvas.removeEventListener('mousemove', onMouseMove);

@@ -109,7 +109,10 @@ export function mergeGeometries(geometries, materials) {
   const positionArray = new Float32Array(counts.position * 3);
   const normalArray = new Float32Array(counts.normal * 3);
   const uvArray = new Float32Array(counts.uv * 2);
-  const indexArray = counts.index > 65535 ? new Uint32Array(counts.index) : new Uint16Array(counts.index);
+  // Indices address VERTICES, so the 16-bit limit depends on the vertex count,
+  // not the index count: a merged mesh with >65535 vertices but fewer indices
+  // would silently wrap its indices and corrupt geometry with Uint16Array.
+  const indexArray = counts.position > 65535 ? new Uint32Array(counts.index) : new Uint16Array(counts.index);
 
   let vertOffset = 0;
   let indexOffset = 0;
@@ -317,6 +320,62 @@ export class Timer {
   reset() { this.start = performance.now(); }
   elapsed() { return performance.now() - this.start; }
   elapsedSeconds() { return (performance.now() - this.start) / 1000; }
+}
+
+// Camera occlusion: pull a third-person camera back out of buildings.
+// `target` is the look-at point, `desiredPos` where the camera wants to be,
+// `buildings` are meshes with userData { bw, bd, height } (see City).
+// The segment is tested in XZ against each building's footprint; when the
+// segment would pass through a building taller than the camera at that
+// point, the camera is placed just before the entry point (never closer
+// than minDistance to the target). Returns a new Vector3.
+export function clampCameraToBuildings(target, desiredPos, buildings, minDistance = 1.5) {
+  if (!buildings || buildings.length === 0) return desiredPos.clone();
+  const dx = desiredPos.x - target.x;
+  const dz = desiredPos.z - target.z;
+  const segLen = Math.hypot(dx, dz);
+  if (segLen < 0.001) return desiredPos.clone();
+  const dirX = dx / segLen;
+  const dirZ = dz / segLen;
+  let maxT = segLen; // furthest allowed distance along the segment
+
+  for (const b of buildings) {
+    const halfW = (b.userData?.bw || 0) / 2 + 0.4; // small clearance
+    const halfD = (b.userData?.bd || 0) / 2 + 0.4;
+    const height = b.userData?.height || 0;
+    const cx = b.position.x;
+    const cz = b.position.z;
+    // Slab test: entry distance of the ray (target -> desired) into the AABB.
+    let tMin = 0;
+    let tMax = segLen;
+    let hit = true;
+    for (const [origin, dir, center, half] of [
+      [target.x, dirX, cx, halfW],
+      [target.z, dirZ, cz, halfD],
+    ]) {
+      if (Math.abs(dir) < 1e-9) {
+        if (origin < center - half || origin > center + half) { hit = false; break; }
+      } else {
+        let t1 = (center - half - origin) / dir;
+        let t2 = (center + half - origin) / dir;
+        if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+        tMin = Math.max(tMin, t1);
+        tMax = Math.min(tMax, t2);
+        if (tMin > tMax) { hit = false; break; }
+      }
+    }
+    if (!hit || tMin >= maxT) continue;
+    // Only blocks if the camera would be below the roof at the entry point.
+    const yAtEntry = target.y + (desiredPos.y - target.y) * (tMin / segLen);
+    if (yAtEntry < height) maxT = Math.max(minDistance, tMin - 0.3);
+  }
+
+  if (maxT >= segLen) return desiredPos.clone();
+  const out = desiredPos.clone();
+  out.x = target.x + dirX * maxT;
+  out.z = target.z + dirZ * maxT;
+  out.y = target.y + (desiredPos.y - target.y) * (maxT / segLen);
+  return out;
 }
 
 // Debounce

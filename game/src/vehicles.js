@@ -2,7 +2,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { createMaterial, createStandardMaterial, clamp, lerpVec3 } from './utils.js';
+import { createMaterial, createStandardMaterial, clamp, lerpVec3, angleDiff } from './utils.js';
 import { ACTION } from './input.js';
 
 export class Vehicle {
@@ -34,6 +34,20 @@ export class Vehicle {
     
     // Input state
     this.input = { accel: 0, brake: 0, steer: 0, handbrake: false };
+
+    // Cruise control target speed (units/s) or null to disable. When set,
+    // updatePhysics holds this speed with no driver input (used by the
+    // chase screenshot preset so the car doesn't coast to a stop).
+    this.cruiseSpeed = null;
+
+    // Cruise distance cap (units travelled under cruise, or null for
+    // unlimited). When reached the car brakes to a stop and stays there.
+    // The chase preset uses it so the car ends parked at a known spot:
+    // headless captures simulate anywhere from ~15 to ~60 game-seconds
+    // in a 30 s virtual-time budget, so an uncapped cruise ends up
+    // anywhere from mid-city to the world edge depending on the run.
+    this.cruiseDistance = null;
+    this.cruiseTraveled = 0;
     
     // Visual
     this.color = color || CONFIG.PALETTE.VEHICLE_COLORS[Math.floor(Math.random() * CONFIG.PALETTE.VEHICLE_COLORS.length)];
@@ -109,7 +123,7 @@ export class Vehicle {
     // Cabin
     const cabin = new THREE.Mesh(cabinGeo, glassMat);
     cabin.position.y = height * 0.65;
-    cabin.position.z = -length * 0.05;
+    cabin.position.z = length * 0.05;
     cabin.castShadow = true;
     this.mesh.add(cabin);
     this.cabinMesh = cabin;
@@ -120,7 +134,7 @@ export class Vehicle {
       const lightBarMat = createStandardMaterial(0x1a1a1a);
       const lightBar = new THREE.Mesh(lightBarGeo, lightBarMat);
       lightBar.position.y = height + 0.1;
-      lightBar.position.z = -length * 0.05;
+      lightBar.position.z = length * 0.05;
       lightBar.castShadow = true;
       this.mesh.add(lightBar);
       this.lightBar = lightBar;
@@ -143,55 +157,56 @@ export class Vehicle {
       this.sirenActive = false;
     }
     
-    // Wheels positions (visual)
+    // Wheels positions (visual) — front axle at +Z: the car's front is
+    // local +Z, matching the physics forward (sin r, cos r).
     const wheelOffsetX = width / 2 - 0.15;
     const wheelOffsetZ = length / 2 - 0.4;
     this.wheelPositions = [
-      new THREE.Vector3(-wheelOffsetX, height * 0.15, -wheelOffsetZ), // FL
-      new THREE.Vector3(wheelOffsetX, height * 0.15, -wheelOffsetZ),  // FR
-      new THREE.Vector3(-wheelOffsetX, height * 0.15, wheelOffsetZ),  // RL
-      new THREE.Vector3(wheelOffsetX, height * 0.15, wheelOffsetZ),   // RR
+      new THREE.Vector3(-wheelOffsetX, height * 0.15, wheelOffsetZ), // FL
+      new THREE.Vector3(wheelOffsetX, height * 0.15, wheelOffsetZ),  // FR
+      new THREE.Vector3(-wheelOffsetX, height * 0.15, -wheelOffsetZ), // RL
+      new THREE.Vector3(wheelOffsetX, height * 0.15, -wheelOffsetZ),  // RR
     ];
     
-    // Headlights
+    // Headlights (front = local +Z, matching the physics forward)
     const headlightGeo = new THREE.SphereGeometry(0.15, 8, 6);
     const headlightMat = new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0 });
     this.headlights = [];
     for (let side of [-1, 1]) {
       const hl = new THREE.Mesh(headlightGeo, headlightMat);
-      hl.position.set(side * width * 0.4, height * 0.35, -length * 0.48);
+      hl.position.set(side * width * 0.4, height * 0.35, length * 0.48);
       this.mesh.add(hl);
       this.headlights.push(hl);
     }
-    
-    // Taillights
+
+    // Taillights (rear = local -Z)
     const taillightGeo = new THREE.BoxGeometry(0.4, 0.2, 0.05);
     const taillightMat = new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.3 });
     this.taillights = [];
     for (let side of [-1, 1]) {
       const tl = new THREE.Mesh(taillightGeo, taillightMat);
-      tl.position.set(side * width * 0.35, height * 0.35, length * 0.48);
+      tl.position.set(side * width * 0.35, height * 0.35, -length * 0.48);
       this.mesh.add(tl);
       this.taillights.push(tl);
     }
-    
+
     // Brake lights (brighter)
     const brakeLightMat = new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0 });
     this.brakeLights = [];
     for (let side of [-1, 1]) {
       const bl = new THREE.Mesh(taillightGeo, brakeLightMat);
-      bl.position.set(side * width * 0.35, height * 0.35, length * 0.49);
+      bl.position.set(side * width * 0.35, height * 0.35, -length * 0.49);
       this.mesh.add(bl);
       this.brakeLights.push(bl);
     }
-    
+
     // Reverse lights
     const reverseLightGeo = new THREE.SphereGeometry(0.1, 8, 6);
     const reverseLightMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
     this.reverseLights = [];
     for (let side of [-1, 1]) {
       const rl = new THREE.Mesh(reverseLightGeo, reverseLightMat);
-      rl.position.set(side * width * 0.25, height * 0.35, length * 0.48);
+      rl.position.set(side * width * 0.25, height * 0.35, -length * 0.48);
       this.mesh.add(rl);
       this.reverseLights.push(rl);
     }
@@ -241,23 +256,62 @@ export class Vehicle {
     }
   }
   
-  update(delta, input = null) {
+  update(delta, target = null) {
     if (this.isDestroyed) {
       this.updateDestruction(delta);
       return;
     }
-    
-    // Use driver input or AI input
+
+    // Driver-controlled (player) or AI-controlled.
     if (this.driver) {
       this.processDriverInput(delta);
-    } else if (input) {
-      this.input = input;
+    } else if (target && typeof target.x === 'number' && typeof target.z === 'number') {
+      // A target position was passed (police chasing the player): steer
+      // toward it. NOTE: the old code assigned the target Vector3 to
+      // `this.input`, so `this.input.steer` was undefined and the steering
+      // math produced NaN — every police car vanished (NaN position) on
+      // its first update tick.
+      this.updateAIChase(delta, target);
+    } else {
+      // No driver and no chase target: drive on the stored AI input
+      // (traffic). The old code only ran physics when an input argument
+      // was passed, so traffic cars given setAIInput() never moved at all.
       this.updatePhysics(delta);
     }
-    
+
     this.updateVisuals(delta);
     this.updateAudio(delta);
     this.updateMesh();
+  }
+
+  // Police AI: steer toward a target position and close the distance,
+  // braking to a stop just short of it instead of ramming through.
+  updateAIChase(delta, target) {
+    const dx = target.x - this.position.x;
+    const dz = target.z - this.position.z;
+    const dist = Math.hypot(dx, dz);
+    const targetAngle = Math.atan2(dx, dz);
+    const angle = angleDiff(this.rotation, targetAngle);
+    this.input.steer = clamp(angle, -1, 1);
+    // Slow down for sharp turns: steering rate falls with speed, so a
+    // full-speed cop overshoots in a ~100-unit circle and never closes in.
+    // Below ~10 units/s the turning circle shrinks to ~8 units, so the
+    // sharper the angle to the target, the slower the cop goes.
+    const baseTarget = this.input.targetSpeed != null ? this.input.targetSpeed : 25;
+    const turnSlow = 1 - 0.9 * Math.min(1, Math.abs(angle) / 1.2);
+    const targetSpeed = baseTarget * turnSlow;
+    if (dist > 10) {
+      this.input.accel = this.speed < targetSpeed ? 1 : 0;
+      this.input.brake = this.speed > targetSpeed + 2 ? 0.8 : 0;
+    } else if (dist > 5) {
+      this.input.accel = 0;
+      this.input.brake = 0.4;
+    } else {
+      this.input.accel = 0;
+      this.input.brake = 1;
+    }
+    this.input.handbrake = false;
+    this.updatePhysics(delta);
   }
   
   processDriverInput(delta) {
@@ -290,26 +344,51 @@ export class Vehicle {
   
   updatePhysics(delta) {
     const { VEHICLE } = CONFIG;
-    
+
+    // Effective accel/brake for this tick. These are LOCALS, never written
+    // back to this.input: the stored AI input (accel 0.6 etc.) is the car's
+    // standing orders, and zeroing it once the car first reaches its
+    // target speed would latch acceleration off forever.
+    let accel = this.input.accel || 0;
+    let brake = this.input.brake || 0;
+    // Cruise control: when cruiseSpeed is set (e.g. the chase screenshot
+    // preset, where no keys are pressed), hold that speed instead of
+    // coasting to a stop from rolling resistance. A cruiseDistance cap
+    // brakes the car to a stop once it has travelled that far.
+    if (this.cruiseSpeed != null) {
+      if (this.cruiseDistance != null && this.cruiseTraveled >= this.cruiseDistance) {
+        accel = 0;
+        brake = 1;
+      } else {
+        accel = this.speed < this.cruiseSpeed ? 1 : 0;
+        brake = 0;
+      }
+    } else if (this.input.targetSpeed != null && this.speed >= this.input.targetSpeed) {
+      // AI target-speed cap: traffic/pursuit cars don't accelerate past
+      // the speed their AI input asked for (otherwise they'd run away to
+      // MAX_SPEED now that physics actually runs for them).
+      accel = 0;
+    }
+
     // Engine
-    if (this.input.accel > 0 || this.input.brake > 0) {
+    if (accel > 0 || brake > 0) {
       if (!this.engineOn) {
         this.engineOn = true;
       }
     }
-    
+
     // Engine RPM
-    const targetRpm = this.engineOn ? (Math.abs(this.speed) / VEHICLE.MAX_SPEED + this.input.accel * 0.5) : 0;
+    const targetRpm = this.engineOn ? (Math.abs(this.speed) / VEHICLE.MAX_SPEED + accel * 0.5) : 0;
     this.rpm += (targetRpm - this.rpm) * delta * 5;
     this.rpm = clamp(this.rpm, 0, 1);
-    
+
     // Forward/backward force
     let force = 0;
-    if (this.input.accel > 0) {
-      force = VEHICLE.ACCELERATION * this.input.accel;
+    if (accel > 0) {
+      force = VEHICLE.ACCELERATION * accel;
       if (this.speed < 0) force *= 2; // Stronger braking when reversing
-    } else if (this.input.brake > 0) {
-      force = -VEHICLE.BRAKE_FORCE * this.input.brake * Math.sign(this.speed || 1);
+    } else if (brake > 0) {
+      force = -VEHICLE.BRAKE_FORCE * brake * Math.sign(this.speed || 1);
     } else {
       // Rolling resistance
       force = -this.speed * 2;
@@ -317,6 +396,11 @@ export class Vehicle {
     
     this.speed += force * delta;
     this.speed = clamp(this.speed, -VEHICLE.MAX_SPEED * 0.3, VEHICLE.MAX_SPEED);
+
+    // Track distance travelled under cruise control (for cruiseDistance).
+    if (this.cruiseSpeed != null) {
+      this.cruiseTraveled += Math.abs(this.speed) * delta;
+    }
     
     // Steering
     const steerSpeed = VEHICLE.HANDLING * (1 - Math.abs(this.speed) / VEHICLE.MAX_SPEED * 0.5);

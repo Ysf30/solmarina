@@ -2,7 +2,7 @@
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { createMaterial, createStandardMaterial, clamp, lerpVec3 } from './utils.js';
+import { createMaterial, createStandardMaterial, clamp, lerpVec3, clampCameraToBuildings } from './utils.js';
 import { ACTION } from './input.js';
 
 export class Player {
@@ -330,8 +330,15 @@ export class Player {
       desiredPos.add(right.multiplyScalar(1.5));
     }
 
+    // Keep the camera out of buildings: without this the camera clips
+    // straight through walls whenever the player stands next to one, and
+    // the whole screen fills with a single flat wall.
+    const occludedPos = (this.city && this.city.buildings)
+      ? clampCameraToBuildings(this.cameraTarget, desiredPos, this.city.buildings)
+      : desiredPos;
+
     // Lerp
-    camera.position.lerp(desiredPos, 1 - Math.exp(-CAMERA.LERP_SPEED * delta));
+    camera.position.lerp(occludedPos, 1 - Math.exp(-CAMERA.LERP_SPEED * delta));
     camera.lookAt(this.cameraTarget);
   }
   
@@ -352,14 +359,23 @@ export class Player {
     this.position.copy(this.vehicle.position);
     this.position.y += 1;
     
-    // Vehicle camera
+    // Vehicle camera. Forward is the physics forward (sin r, cos r) — the
+    // direction the car travels. (The old code used (0,0,-1) through the
+    // mesh quaternion, the exact opposite, so the chase camera sat on the
+    // wrong side of the car and looked backwards: the police escort ahead
+    // was never in frame.)
     const { CAMERA } = CONFIG;
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.vehicle.mesh.quaternion);
+    const forward = new THREE.Vector3(Math.sin(this.vehicle.rotation), 0, Math.cos(this.vehicle.rotation));
     const targetPos = this.vehicle.position.clone().add(new THREE.Vector3(0, CAMERA.VEHICLE_HEIGHT, 0)).add(forward.clone().multiplyScalar(CAMERA.LOOK_AHEAD));
     const desiredPos = targetPos.clone().sub(forward.clone().multiplyScalar(CAMERA.VEHICLE_DISTANCE));
     desiredPos.y += CAMERA.VEHICLE_HEIGHT;
-    
-    camera.position.lerp(desiredPos, 1 - Math.exp(-CAMERA.LERP_SPEED * delta));
+
+    // Same building occlusion as the on-foot camera.
+    const occludedPos = (this.city && this.city.buildings)
+      ? clampCameraToBuildings(targetPos, desiredPos, this.city.buildings)
+      : desiredPos;
+
+    camera.position.lerp(occludedPos, 1 - Math.exp(-CAMERA.LERP_SPEED * delta));
     camera.lookAt(targetPos);
   }
   
@@ -387,7 +403,8 @@ export class Player {
     
     this.inVehicle = false;
     const exitPos = this.vehicle.position.clone();
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.vehicle.mesh.quaternion);
+    // Step out behind the car (forward = travel direction; see shoot()).
+    const forward = new THREE.Vector3(Math.sin(this.vehicle.rotation), 0, Math.cos(this.vehicle.rotation));
     exitPos.add(forward.clone().multiplyScalar(-3));
     exitPos.y = this.city.raycastGround(exitPos.x, exitPos.z) + 1;
     
@@ -417,17 +434,20 @@ export class Player {
     // Play sound
     this.audio.playGunshot(this.position);
     
-    // Return raycast info for hit detection
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.headMesh.getWorldQuaternion(new THREE.Quaternion()));
+    // Return raycast info for hit detection. Forward is (sin r, cos r) —
+    // the same facing the movement code and camera use. (The old code used
+    // (0,0,-1) through the mesh quaternion, which is the exact opposite
+    // direction, so the player shot and punched backwards.)
+    const forward = new THREE.Vector3(Math.sin(this.mesh.rotation.y), 0, Math.cos(this.mesh.rotation.y));
     const origin = this.headMesh.getWorldPosition(new THREE.Vector3());
     
     return { origin, direction: forward, damage: COMBAT.PISTOL_DAMAGE, range: COMBAT.PISTOL_RANGE, spread: COMBAT.PISTOL_SPREAD };
   }
   
   meleeAttack() {
-    // Simple punch
+    // Simple punch (forward = movement facing; see shoot()).
     this.audio.playPunch();
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.mesh.quaternion);
+    const forward = new THREE.Vector3(Math.sin(this.mesh.rotation.y), 0, Math.cos(this.mesh.rotation.y));
     const origin = this.position.clone().add(new THREE.Vector3(0, 1.5, 0)).add(forward.multiplyScalar(1));
     return { origin, direction: forward, damage: CONFIG.PLAYER.PUNCH_DAMAGE, range: CONFIG.PLAYER.PUNCH_RANGE };
   }

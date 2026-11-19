@@ -2,9 +2,9 @@
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
-import { 
+import {
   createMaterial, createStandardMaterial, mergeGeometries,
-  noise2D, hash2D, createRandom
+  noise2D, hash2D, createRandom, clamp
 } from './utils.js';
 
 export class City {
@@ -98,7 +98,7 @@ export class City {
   
   createSky() {
     const { PALETTE, WORLD } = CONFIG;
-    
+
     // Sky dome
     const skyGeo = new THREE.SphereGeometry(WORLD.SIZE * 2, 32, 16);
     const skyMat = new THREE.MeshBasicMaterial({
@@ -108,7 +108,7 @@ export class City {
     });
     this.sky = new THREE.Mesh(skyGeo, skyMat);
     this.scene.add(this.sky);
-    
+
     // Sun
     const sunGeo = new THREE.SphereGeometry(50, 16, 12);
     const sunMat = new THREE.MeshBasicMaterial({
@@ -118,7 +118,25 @@ export class City {
     this.sun = new THREE.Mesh(sunGeo, sunMat);
     this.sun.position.set(-300, 400, -300);
     this.scene.add(this.sun);
-    
+
+    // Sun light (directional with shadows)
+    this.sunLight = new THREE.DirectionalLight(0xffffff, 1);
+    this.sunLight.position.set(-300, 400, -300);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.width = 2048;
+    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.camera.near = 1;
+    this.sunLight.shadow.camera.far = 1000;
+    this.sunLight.shadow.camera.left = -500;
+    this.sunLight.shadow.camera.right = 500;
+    this.sunLight.shadow.camera.top = 500;
+    this.sunLight.shadow.camera.bottom = -500;
+    this.scene.add(this.sunLight);
+
+    // Ambient light (hemisphere for ground/sky color)
+    this.ambientLight = new THREE.HemisphereLight(0x88ccff, 0x443322, 0.6);
+    this.scene.add(this.ambientLight);
+
     // Fog
     this.scene.fog = new THREE.FogExp2(PALETTE.FOG_DAY, 0.0008);
   }
@@ -161,7 +179,7 @@ export class City {
   
   createStreet(x1, z1, x2, z2, width, isMain) {
     const { PALETTE } = CONFIG;
-    const streetMat = createMaterial(isMain ? PALETTE.ROAD : 0x2a2a2e);
+    const streetMat = createMaterial(PALETTE.ROAD);
     
     const length = Math.sqrt((x2 - x1) ** 2 + (z2 - z1) ** 2);
     const geo = new THREE.BoxGeometry(width, 0.1, length);
@@ -223,8 +241,16 @@ export class City {
     
     for (let gx = -Math.floor(HALF_SIZE / BUILDING_GRID); gx <= Math.floor(HALF_SIZE / BUILDING_GRID); gx++) {
       for (let gz = -Math.floor(HALF_SIZE / BUILDING_GRID); gz <= Math.floor(HALF_SIZE / BUILDING_GRID); gz++) {
-        const centerX = gx * BUILDING_GRID;
-        const centerZ = gz * BUILDING_GRID;
+        // Buildings sit in the MIDDLE of each block (half a grid cell off
+        // the street lines). The old code centered them on the grid lines,
+        // i.e. exactly where the streets run, so every street was blocked
+        // by building footprints and any car driving down a street rammed
+        // a wall within a block or two.
+        const centerX = gx * BUILDING_GRID + BUILDING_GRID / 2;
+        const centerZ = gz * BUILDING_GRID + BUILDING_GRID / 2;
+
+        // Keep the outermost ring inside the world.
+        if (Math.abs(centerX) > HALF_SIZE - BUILDING_GRID / 2 || Math.abs(centerZ) > HALF_SIZE - BUILDING_GRID / 2) continue;
         
         // Skip if too close to center (spawn area)
         if (Math.abs(centerX) < 80 && Math.abs(centerZ) < 80) continue;
@@ -358,7 +384,7 @@ export class City {
   
   createPalms() {
     const { WORLD, PALETTE } = CONFIG;
-    const { BUILDING_GRID, HALF_SIZE, SEA_LEVEL } = WORLD;
+    const { BUILDING_GRID, STREET_WIDTH, HALF_SIZE, SEA_LEVEL } = WORLD;
     
     const palmGeo = new THREE.CylinderGeometry(0.3, 0.5, 8, 6);
     const palmMat = createStandardMaterial(0x2a4a1a);
@@ -400,11 +426,16 @@ export class City {
     
     // Street palms
     const mainSpacing = BUILDING_GRID * 4;
+    const palmOffset = STREET_WIDTH * 1.5 / 2 + 2; // sidewalk edge, like streetlights
     for (let x = -HALF_SIZE; x <= HALF_SIZE; x += mainSpacing) {
       for (let z = -HALF_SIZE + BUILDING_GRID; z <= HALF_SIZE - BUILDING_GRID; z += BUILDING_GRID * 2) {
         if (this.random() < 0.4) {
           const palm = this.createSinglePalm();
-          palm.position.set(x + (this.random() - 0.5) * 10, 0, z);
+          // Keep palms OUT of the driving lane: the old code put them at
+          // x +/- 5, i.e. in the middle of the road, so a chase camera
+          // spent the whole shot staring at a palm trunk.
+          const side = this.random() < 0.5 ? -1 : 1;
+          palm.position.set(x + side * palmOffset + (this.random() - 0.5) * 2, 0, z);
           this.scene.add(palm);
           this.palms.push(palm);
         }
@@ -605,8 +636,8 @@ export class City {
     for (let i = 0; i < 40; i++) {
       const gx = Math.floor((this.random() - 0.5) * (HALF_SIZE / BUILDING_GRID) * 2);
       const gz = Math.floor((this.random() - 0.5) * (HALF_SIZE / BUILDING_GRID) * 2);
-      const cx = gx * BUILDING_GRID;
-      const cz = gz * BUILDING_GRID;
+      const cx = gx * BUILDING_GRID + BUILDING_GRID / 2;
+      const cz = gz * BUILDING_GRID + BUILDING_GRID / 2;
       
       if (Math.abs(cx) < 80 && Math.abs(cz) < 80) continue;
       
@@ -650,6 +681,9 @@ export class City {
   
   // Update animated elements
   update(delta, timeOfDay) {
+    // Accumulate elapsed time for animations
+    this.elapsed = (this.elapsed || 0) + delta;
+
     // Water animation
     if (this.water) {
       this.water.userData.time += delta;
@@ -660,47 +694,64 @@ export class City {
         (Math.sin(t * 0.5) + 1) * 0.5 * 0.3
       );
     }
-    
+
+    // Day factor for time of day (0 = night, 1 = day)
+    const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
+    const angle = timeOfDay * Math.PI * 2;
+
     // Sky color based on time of day
     if (this.sky) {
-      const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
-      const skyColor = new THREE.Color().lerpColors(
-        CONFIG.PALETTE.SKY_NIGHT,
-        CONFIG.PALETTE.SKY_DAY,
-        dayFactor
-      );
+      // Use setHex for reliable color interpolation
+      const nightColor = new THREE.Color(CONFIG.PALETTE.SKY_NIGHT);
+      const dayColor = new THREE.Color(CONFIG.PALETTE.SKY_DAY);
+      const skyColor = new THREE.Color().lerpColors(nightColor, dayColor, dayFactor);
+      // Sunset tint: when the sun is low (dayFactor mid-low, but not yet
+      // night), warm the sky and fog toward the sunset palette so dusk
+      // actually reads as dusk instead of a dim grey day.
+      const sunsetAmount = clamp((0.5 - dayFactor) / 0.35, 0, 1) * clamp((dayFactor - 0.08) / 0.12, 0, 1);
+      if (sunsetAmount > 0) {
+        skyColor.lerp(new THREE.Color(CONFIG.PALETTE.SKY_SUNSET), sunsetAmount * 0.7);
+      }
       this.sky.material.color.copy(skyColor);
-      
+
       // Fog color
-      this.scene.fog.color.lerpColors(
-        CONFIG.PALETTE.FOG_NIGHT,
-        CONFIG.PALETTE.FOG_DAY,
-        dayFactor
-      );
+      const fogNight = new THREE.Color(CONFIG.PALETTE.FOG_NIGHT);
+      const fogDay = new THREE.Color(CONFIG.PALETTE.FOG_DAY);
+      this.scene.fog.color.lerpColors(fogNight, fogDay, dayFactor);
+      if (sunsetAmount > 0) {
+        this.scene.fog.color.lerp(new THREE.Color(CONFIG.PALETTE.FOG_SUNSET), sunsetAmount * 0.7);
+      }
     }
-    
+
     // Sun position
     if (this.sun) {
-      const angle = timeOfDay * Math.PI * 2;
       this.sun.position.set(
         Math.cos(angle) * 400,
         Math.sin(angle) * 400 + 200,
         Math.sin(angle) * 300
       );
-      
+
       // Sun color
-      const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
-      this.sun.material.color.lerpColors(
-        CONFIG.PALETTE.SKY_NIGHT,
-        CONFIG.PALETTE.SUN_COLOR,
-        dayFactor
-      );
+      const sunNight = new THREE.Color(CONFIG.PALETTE.SKY_NIGHT);
+      const sunDay = new THREE.Color(CONFIG.PALETTE.SUN_COLOR);
+      this.sun.material.color.lerpColors(sunNight, sunDay, dayFactor);
+
+      if (this.ambientLight) {
+        this.ambientLight.intensity = 0.6 * dayFactor + 0.35;
+        this.ambientLight.color.setHSL(0.1, 0.3, 0.5 * dayFactor + 0.3);
+        this.ambientLight.groundColor.setHSL(0.6, 0.2, 0.1 * dayFactor + 0.05);
+      }
     }
-    
+
+    // Update sun light position to match sun
+    if (this.sunLight) {
+      this.sunLight.position.copy(this.sun.position);
+    }
+
     // Streetlight glow pulse
     for (const light of this.streetlights) {
       if (light.userData.glow) {
-        const intensity = 0.3 + Math.sin(time * 2 + light.position.x * 0.1) * 0.2;
+        const intensity = 0.3 + Math.sin(this.elapsed * 2 + light.position.x * 0.1) * 0.2;
         light.userData.glow.material.opacity = intensity;
       }
     }
