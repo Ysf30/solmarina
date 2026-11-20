@@ -75,8 +75,11 @@ export class City {
   }
   
   createSea() {
-    const { SIZE, SEA_LEVEL, PALETTE } = CONFIG;
-    const { WORLD } = CONFIG;
+    // SIZE and SEA_LEVEL live under CONFIG.WORLD, not CONFIG: destructuring
+    // them from CONFIG gave undefined, so PlaneGeometry(NaN, NaN) made every
+    // water vertex NaN and the sea rendered nothing (plus a NaN warning).
+    const { SIZE, SEA_LEVEL } = CONFIG.WORLD;
+    const { PALETTE } = CONFIG;
     
     const waterGeo = new THREE.PlaneGeometry(SIZE * 2, SIZE * 2, 32, 32);
     const waterMat = new THREE.MeshStandardMaterial({
@@ -92,6 +95,12 @@ export class City {
     this.water.receiveShadow = true;
     this.scene.add(this.water);
     
+    // Pre-built colors for the water tint animation: lerpColors needs
+    // THREE.Color objects, not raw hex numbers (passing numbers made the
+    // water color NaN every frame).
+    this.waterDayColor = new THREE.Color(PALETTE.WATER_DAY);
+    this.waterNightColor = new THREE.Color(PALETTE.WATER_NIGHT);
+
     // Animated water normal
     this.water.userData = { time: 0 };
   }
@@ -689,8 +698,8 @@ export class City {
       this.water.userData.time += delta;
       const t = this.water.userData.time;
       this.water.material.color.lerpColors(
-        CONFIG.PALETTE.WATER_DAY,
-        CONFIG.PALETTE.WATER_NIGHT,
+        this.waterDayColor,
+        this.waterNightColor,
         (Math.sin(t * 0.5) + 1) * 0.5 * 0.3
       );
     }
@@ -737,15 +746,18 @@ export class City {
       this.sun.material.color.lerpColors(sunNight, sunDay, dayFactor);
 
       if (this.ambientLight) {
-        this.ambientLight.intensity = 0.6 * dayFactor + 0.35;
+        this.ambientLight.intensity = 0.55 + 0.65 * dayFactor;
         this.ambientLight.color.setHSL(0.1, 0.3, 0.5 * dayFactor + 0.3);
         this.ambientLight.groundColor.setHSL(0.6, 0.2, 0.1 * dayFactor + 0.05);
       }
     }
 
-    // Update sun light position to match sun
+    // Update sun light position to match sun, and scale its intensity with
+    // the time of day (it used to be a flat 1.0, so noon looked like dusk
+    // and shaded building faces went near-black under ACES tonemapping).
     if (this.sunLight) {
       this.sunLight.position.copy(this.sun.position);
+      this.sunLight.intensity = 0.4 + 2.2 * dayFactor;
     }
 
     // Streetlight glow pulse
