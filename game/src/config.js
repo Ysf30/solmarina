@@ -102,7 +102,7 @@ export const CONFIG = {
   // Camera
   CAMERA: {
     FOOT_OFFSET: new THREE.Vector3(0, 1.6, 0),
-    FOOT_DISTANCE: 4.5,
+    FOOT_DISTANCE: 6.5,
     FOOT_HEIGHT: 1.8,
     VEHICLE_OFFSET: new THREE.Vector3(0, 1.2, 0),
     VEHICLE_DISTANCE: 8,
@@ -153,7 +153,10 @@ export const CONFIG = {
     // while staying darker than the grass/buildings in sun.
     ROAD: 0x3d3d44,
     SIDEWALK: 0x5c5c64,
-    BUILDING_BASE: [0x3a3a4a, 0x4a4a5a, 0x5a5a6a, 0x2a2a3a, 0x6a5a4a],
+    // Base colors were dark blue-greys (0x3a3a4a...): shaded faces rendered
+    // near-black under ACES tonemapping. Lighter warm tones keep the city
+    // readable in shadow while staying darker than sunlit faces.
+    BUILDING_BASE: [0x6a6a7e, 0x7a7a8c, 0x8a8a9c, 0x5a5a6e, 0x9a8a76],
     BUILDING_ACCENT: [0x8a7a5a, 0x7a6a5a, 0x9a8a6a, 0x6a5a4a, 0xaa9a7a],
     WINDOW_LIT: 0xffee88,
     WINDOW_DARK: 0x1a1a2a,
