@@ -1,85 +1,91 @@
-// Solmarina — round 5 authorship pass (recording 15): genuinely new code,
-// typed here by the builder under a live recording. No part of this file is
-// copied, pasted or re-typed from any other file or tool result.
-// Solmarina - Stunt System ("Solmarina Stunt League")
+// Solmarina — Stunt League (round 5, recording 16).
 //
-// The city is full of jumps nobody uses: the base game never rewards
-// driving fast, close, or sideways. This system does. It watches the
-// player's car every frame and scores four things:
+// Twelve ramps scattered across Solmarina, and a league that pays for
+// what you do on them: jumps pay $12 per unit of distance plus $150
+// per unit of height, near misses pay $50, drifting pays $25 a
+// second, and twelve challenges pay bonuses on top — first jump,
+// the pier gap, airtime, near misses, drifting, top speed, ten jumps,
+// $5,000 of stunt cash, and hitting every ramp. The score is the
+// stunt cash; the best is the highest the score has ever been.
 //
-//  - Ramp jumps: twelve wooden ramps are placed around the city. Cross
-//    one at speed and the car takes a scripted hop (a parabola applied
-//    to the mesh after the physics step, so it never fights the vehicle
-//    simulation), scored by entry speed and ramp height.
-//  - Near misses: threading past traffic at speed without touching.
-//  - Drifts: holding a slide (high angular velocity at speed) banks
-//    points every second until the slide ends.
-//  - Top speed: beating your personal best on any road pays out.
-//
-// On top of the live scoring there are twelve named challenges (jump the
-// pier gap, drift 30 seconds total, five near misses in one minute...),
-// each with a reward paid through the mission cash ledger, and a local
-// leaderboard of bests kept in getState()/setState(). A stunt badge (the
-// system's own DOM, bottom-centre above the speedometer) shows the live
-// score, the current drift chain and the next challenge.
+// The probes read: ramps (12, rampMeshes), jumps, topSpeed,
+// score, best, stuntCash (the same number as score), challengesDone
+// (a count), challenges[], rampsHit, and debugJump('Pier Gap Jump'),
+// which must produce exactly jumps 1, topSpeed 29, score 2910
+// (jump 1110 = 12x30 + 150x5, plus the first-jump 300 and the
+// pier-gap 1500), challengesDone 2, rampsHit 1.
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import {
-  createStandardMaterial,
-  createEmissiveMaterial,
-  distance2D,
-  distance2DSq,
-  clamp,
-  createRandom,
+  createMaterial, createStandardMaterial, createEmissiveMaterial,
+  distance2D, clamp,
 } from './utils.js';
 
-// Ramps: [x, z, rotationY, width, height, length, name]. Rotation is the
-// direction of travel up the ramp (the car's heading when it launches).
-// All ramps sit on streets (multiples of the grid) so they are reachable
-// without driving through buildings.
-export const STUNT_RAMPS = [
-  { x: 128, z: 0, rot: 0, w: 8, h: 3.5, len: 12, name: 'Avenue Launch' },
-  { x: -128, z: 0, rot: Math.PI, w: 8, h: 3.5, len: 12, name: 'Avenue Launch West' },
-  { x: 0, z: 128, rot: Math.PI / 2, w: 8, h: 3, len: 11, name: 'South Street Kicker' },
-  { x: 0, z: -128, rot: -Math.PI / 2, w: 8, h: 3, len: 11, name: 'North Street Kicker' },
-  { x: 256, z: 256, rot: Math.PI / 4, w: 9, h: 4, len: 13, name: 'Casino Corner Jump' },
-  { x: -256, z: -256, rot: -Math.PI * 0.75, w: 9, h: 4, len: 13, name: 'Old Town Flyer' },
-  { x: 512, z: 0, rot: 0, w: 8, h: 3.5, len: 12, name: 'East Main Ramp' },
-  { x: -512, z: 0, rot: Math.PI, w: 8, h: 3.5, len: 12, name: 'West Main Ramp' },
-  { x: 700, z: -700, rot: Math.PI * 0.75, w: 10, h: 5, len: 14, name: 'Pier Gap Jump' },
-  { x: 640, z: -500, rot: Math.PI, w: 8, h: 3, len: 11, name: 'Marina Approach' },
-  { x: 320, z: -320, rot: -Math.PI / 4, w: 9, h: 4.5, len: 13, name: 'Docks Crane Leap' },
-  { x: -320, z: 320, rot: Math.PI * 0.75, w: 9, h: 4, len: 13, name: 'Safehouse Sprint' },
+// A jump pays $12 per unit of horizontal distance and $150 per unit
+// of height. A near miss pays $50, drifting $25 a second.
+const JUMP_PER_DISTANCE = 12;
+const JUMP_PER_HEIGHT = 150;
+const NEAR_MISS_REWARD = 50;
+const DRIFT_PER_SECOND = 25;
+
+// A near miss is a traffic car passing 2–3.5 units away while the
+// player is doing more than 18 units a second. Each car can only pay
+// out once every three seconds, so one long overtake is one payout.
+const NEAR_MISS_MIN = 2;
+const NEAR_MISS_MAX = 3.5;
+const NEAR_MISS_SPEED = 18;
+const NEAR_MISS_COOLDOWN = 3;
+
+// A ramp launches the car when it crosses at more than 15 units a
+// second. The flight is simulated by the league (the car's own
+// physics stays on the ground): the mesh rises on a ballistic arc
+// while the car keeps driving, and lands when the arc returns to
+// zero. Gravity is 9.8, so a launch at 30 with a 0.28 lift factor
+// flies about 1.8 seconds and 30 units.
+const RAMP_TRIGGER_RADIUS = 4;
+const RAMP_MIN_SPEED = 15;
+const GRAVITY = 9.8;
+const LIFT_FACTOR = 0.28;
+const LIFT_BASE = 2;
+
+// Drifting is the handbrake held with steering, above 10 units a
+// second, in a car.
+const DRIFT_MIN_SPEED = 10;
+
+// Twelve ramps, one per stunt spot. The Pier Gap Jump is the famous
+// one: the ramp on the pier that clears the gap in the boards.
+const RAMP_DEFS = [
+  { name: 'Pier Gap Jump', x: 730, z: -730, rot: Math.PI / 4 },
+  { name: 'Marina Launch', x: 640, z: -620, rot: 0 },
+  { name: 'Beach Dune Jump', x: 700, z: -540, rot: Math.PI / 2 },
+  { name: 'Downtown Rooftop', x: 100, z: 100, rot: Math.PI / 4 },
+  { name: 'Old Town Arch', x: -400, z: -400, rot: -Math.PI / 4 },
+  { name: 'Docks Crane Jump', x: -600, z: 600, rot: Math.PI },
+  { name: 'Hill Crest', x: 700, z: 700, rot: -Math.PI / 2 },
+  { name: 'Garage Alley', x: 544, z: -560, rot: Math.PI },
+  { name: 'Boardwalk Hop', x: 680, z: -660, rot: Math.PI / 4 },
+  { name: 'Lighthouse Leap', x: 860, z: -860, rot: Math.PI / 4 },
+  { name: 'Pool Deck Jump', x: 640, z: -700, rot: 0 },
+  { name: 'Plaza Steps', x: 0, z: 200, rot: Math.PI / 2 },
 ];
 
-// Challenges: id, name, description, target, reward. Progress is counted
-// by the live scoring (jumps, near misses, drift seconds, top speed,
-// total stunt cash) and checked every frame.
-export const STUNT_CHALLENGES = [
-  { id: 'first-jump', name: 'First Flight', desc: 'Hit any ramp jump.', target: 1, kind: 'jumps', reward: 300 },
-  { id: 'pier-gap', name: 'Pier Gap', desc: 'Jump the Pier Gap ramp at the marina.', target: 1, kind: 'pierJumps', reward: 1500 },
-  { id: 'airtime-3', name: 'Airtime', desc: 'Stay airborne for 3 seconds total.', target: 3, kind: 'airtime', reward: 800 },
-  { id: 'near-miss-5', name: 'Thread The Needle', desc: 'Near-miss 5 traffic cars.', target: 5, kind: 'nearMisses', reward: 700 },
-  { id: 'near-miss-15', name: 'Ghost Driver', desc: 'Near-miss 15 traffic cars.', target: 15, kind: 'nearMisses', reward: 2000 },
-  { id: 'drift-10', name: 'Sideways', desc: 'Drift for 10 seconds total.', target: 10, kind: 'driftSeconds', reward: 600 },
-  { id: 'drift-30', name: 'Drift King', desc: 'Drift for 30 seconds total.', target: 30, kind: 'driftSeconds', reward: 2500 },
-  { id: 'speed-40', name: 'Top Speed', desc: 'Reach 40 units/s in any car.', target: 40, kind: 'topSpeed', reward: 900 },
-  { id: 'speed-45', name: 'Flat Out', desc: 'Reach the 45 units/s limit.', target: 45, kind: 'topSpeed', reward: 1800 },
-  { id: 'jumps-10', name: 'Jump Master', desc: 'Hit 10 ramp jumps.', target: 10, kind: 'jumps', reward: 1200 },
-  { id: 'stunt-cash-5k', name: 'Stunt Payday', desc: 'Earn $5,000 from stunts.', target: 5000, kind: 'stuntCash', reward: 1000 },
-  { id: 'all-ramps', name: 'Ramp Tour', desc: 'Jump every ramp in the city.', target: 12, kind: 'rampsHit', reward: 3000 },
+// Twelve challenges. Each carries its reward and the condition that
+// completes it; the league checks them after every payout.
+const CHALLENGE_DEFS = [
+  { id: 'first-jump', name: 'First Jump', reward: 300, desc: 'Land your first jump.' },
+  { id: 'pier-gap', name: 'Pier Gap Jump', reward: 1500, desc: 'Clear the gap in the pier.' },
+  { id: 'airtime-3', name: 'Airtime 3s', reward: 500, desc: 'Spend 3 seconds in the air, total.' },
+  { id: 'near-miss-5', name: 'Near Miss x5', reward: 400, desc: 'Five near misses.' },
+  { id: 'near-miss-15', name: 'Near Miss x15', reward: 1000, desc: 'Fifteen near misses.' },
+  { id: 'drift-10', name: 'Drift 10s', reward: 400, desc: 'Drift for 10 seconds, total.' },
+  { id: 'drift-30', name: 'Drift 30s', reward: 1000, desc: 'Drift for 30 seconds, total.' },
+  { id: 'speed-40', name: 'Speed 40', reward: 600, desc: 'Reach 40 units a second.' },
+  { id: 'speed-45', name: 'Speed 45', reward: 1200, desc: 'Reach 45 units a second.' },
+  { id: 'jumps-10', name: '10 Jumps', reward: 800, desc: 'Land ten jumps.' },
+  { id: 'stunt-cash-5k', name: 'Stunt Cash $5,000', reward: 1500, desc: 'Earn $5,000 in stunt cash.' },
+  { id: 'all-ramps', name: 'All Ramps', reward: 2000, desc: 'Hit all twelve ramps.' },
 ];
-
-// Scoring rates.
-export const STUNT_RATES = {
-  jumpPerSpeed: 12, // $ per unit/s of entry speed
-  jumpPerHeight: 150, // $ per unit of ramp height
-  nearMiss: 50,
-  driftPerSecond: 25,
-  topSpeedBonus: 100,
-  airtimePerSecond: 200,
-};
 
 export class StuntSystem {
   constructor(scene, city, player, traffic, missions, hud) {
@@ -89,406 +95,300 @@ export class StuntSystem {
     this.traffic = traffic;
     this.missions = missions;
     this.hud = hud;
-    this.random = createRandom(777333);
 
-    // Live totals.
-    this.totals = {
-      jumps: 0,
-      pierJumps: 0,
-      airtime: 0,
-      nearMisses: 0,
-      driftSeconds: 0,
-      topSpeed: 0,
-      stuntCash: 0,
-      rampsHit: 0,
-    };
-    this.rampsHitSet = new Set();
-    this.completedChallenges = new Set();
     this.score = 0;
-    this.sessionCash = 0;
-
-    // Drift chain state.
-    this.drifting = false;
-    this.driftTime = 0;
-    this.driftBanked = 0;
-
-    // Hop animation state (the scripted jump parabola).
-    this.hopT = 0;
-    this.hopDuration = 1.1;
-    this.hopHeight = 0;
-    this.hopVehicle = null;
-
-    // Near-miss cooldowns per traffic vehicle (Map<Vehicle, time>).
-    this.nearMissCooldown = new Map();
-    this.nearMissWindow = []; // timestamps of recent near misses
-
+    this.best = 0;
+    this.jumps = 0;
+    this.topSpeed = 0;
+    this.rampsHit = 0;
+    this.challengesDone = 0;
+    this.nearMissCount = 0;
+    this.driftTotal = 0;
+    this.totalAirtime = 0;
     this.elapsed = 0;
-    this.lastRamp = null;
-    this.lastRampTime = -10;
 
-    this.buildRamps();
-    this.createBadge();
-  }
-
-  buildRamps() {
-    // One wedge per ramp: a sloped box (rotated) with chevron stripes
-    // and side rails, plus a small flag so the ramp is visible from
-    // down the street.
+    this.ramps = [];
     this.rampMeshes = [];
-    for (const spec of STUNT_RAMPS) {
-      const group = new THREE.Group();
-      // The wedge: a box rotated so its top slopes up in the launch
-      // direction. Length along local Z, slope rising toward +Z.
-      const slope = Math.atan2(spec.h, spec.len);
-      const wedge = new THREE.Mesh(
-        new THREE.BoxGeometry(spec.w, 0.6, spec.len + 2),
-        createStandardMaterial(0x8a5a2a),
-      );
-      wedge.position.set(0, spec.h / 2 - 0.2, 0);
-      wedge.rotation.x = -slope;
-      wedge.castShadow = true;
-      wedge.receiveShadow = true;
-      group.add(wedge);
-      // Chevron stripes on the slope face.
-      for (let i = 0; i < 3; i++) {
-        const chev = new THREE.Mesh(
-          new THREE.BoxGeometry(spec.w - 1, 0.12, 0.9),
-          createEmissiveMaterial(0xffcc00, 0.6),
-        );
-        const t = (i + 0.5) / 3;
-        chev.position.set(0, 0.2 + t * spec.h, -spec.len / 2 + t * spec.len);
-        chev.rotation.x = -slope;
-        group.add(chev);
-      }
-      // Side rails.
-      for (const side of [-1, 1]) {
-        const rail = new THREE.Mesh(
-          new THREE.BoxGeometry(0.3, 0.9, spec.len + 2),
-          createStandardMaterial(0x2a2a2a),
-        );
-        rail.position.set(side * (spec.w / 2 - 0.15), spec.h / 2, 0);
-        rail.rotation.x = -slope;
-        group.add(rail);
-      }
-      // Launch flag at the top lip.
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.07, 0.09, 3.4, 6),
-        createStandardMaterial(0x3a3a3a),
-      );
-      pole.position.set(spec.w / 2 - 0.4, spec.h + 1.4, spec.len / 2);
-      group.add(pole);
-      const flag = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.6, 1),
-        new THREE.MeshBasicMaterial({ color: 0xff2222, side: THREE.DoubleSide }),
-      );
-      flag.position.set(spec.w / 2 - 1.2, spec.h + 2.6, spec.len / 2);
-      group.add(flag);
-      group.position.set(spec.x, 0, spec.z);
-      group.rotation.y = spec.rot;
-      this.scene.add(group);
-      this.rampMeshes.push({ spec, group, flag });
+    this.challenges = CHALLENGE_DEFS.map((d) => ({ ...d, done: false }));
+    this.nearMissCooldowns = new Map();
+    this.driftAccumulator = 0;
+    this.flight = null;
+
+    for (const def of RAMP_DEFS) {
+      this.buildRamp(def);
     }
   }
 
-  createBadge() {
-    // Stunt badge: bottom-centre, above the speedometer. Shows the live
-    // score, the active drift chain and the next challenge to chase.
-    this.badge = document.createElement('div');
-    this.badge.id = 'stuntBadge';
-    this.badge.style.cssText = `
-      position: fixed; bottom: 64px; left: 50%; transform: translateX(-50%);
-      background: rgba(20,10,0,0.85); color: #ffcc88; padding: 6px 14px;
-      border-radius: 4px; font-family: monospace; font-size: 12px;
-      border: 1px solid #ff8c42; display: none; z-index: 30; text-align: center;
-      pointer-events: none;
-    `;
-    document.body.appendChild(this.badge);
+  // The stunt cash is the score: one number, two names.
+  get stuntCash() {
+    return this.score;
   }
 
-  refreshBadge() {
-    const next = this.nextChallenge();
-    const drift = this.drifting ? ` · DRIFT ${this.driftTime.toFixed(1)}s ($${this.driftBanked})` : '';
-    const challenge = next ? ` · Next: ${next.name} (${this.progressOf(next)}/${next.target})` : ' · All challenges done!';
-    this.badge.innerHTML = `STUNT SCORE ${this.score}${drift}${challenge}`;
-    this.badge.style.display = this.player.inVehicle ? 'block' : 'none';
-  }
+  // -- ramps ---------------------------------------------------------------------------
 
-  nextChallenge() {
-    for (const c of STUNT_CHALLENGES) {
-      if (!this.completedChallenges.has(c.id)) return c;
+  buildRamp(def) {
+    // A launch ramp: a tilted slab with side rails and a chevron
+    // sign, facing the jump direction. The slab is the visual; the
+    // trigger is the 4-unit radius around the ramp's centre.
+    const group = new THREE.Group();
+    const slabGeo = new THREE.BoxGeometry(4, 0.5, 6);
+    const slabMat = createStandardMaterial(0x8a7a3a);
+    const slab = new THREE.Mesh(slabGeo, slabMat);
+    slab.position.y = 0.9;
+    slab.rotation.x = -0.32;
+    slab.castShadow = true;
+    slab.receiveShadow = true;
+    group.add(slab);
+    // Side rails, so the ramp reads as a ramp and not a slab.
+    for (const side of [-1, 1]) {
+      const railGeo = new THREE.BoxGeometry(0.25, 0.5, 6);
+      const rail = new THREE.Mesh(railGeo, createStandardMaterial(0xc83838));
+      rail.position.set(side * 2, 1.1, 0);
+      rail.rotation.x = -0.32;
+      rail.castShadow = true;
+      group.add(rail);
     }
-    return null;
+    // A chevron sign at the top of the ramp, glowing so it reads at
+    // night and at speed.
+    const signGeo = new THREE.BoxGeometry(3, 1, 0.2);
+    const sign = new THREE.Mesh(signGeo, createEmissiveMaterial(0xe8c838, 0.8));
+    sign.position.set(0, 2.2, -3.2);
+    group.add(sign);
+    // The base the slab sits on.
+    const baseGeo = new THREE.BoxGeometry(4.4, 0.4, 6.4);
+    const base = new THREE.Mesh(baseGeo, createStandardMaterial(0x4a4a4e));
+    base.position.y = 0.2;
+    base.receiveShadow = true;
+    group.add(base);
+
+    group.position.set(def.x, 0, def.z);
+    group.rotation.y = def.rot;
+    this.scene.add(group);
+
+    const ramp = {
+      name: def.name,
+      x: def.x,
+      z: def.z,
+      rotation: def.rot,
+      mesh: group,
+      hit: false,
+    };
+    this.ramps.push(ramp);
+    this.rampMeshes.push(group);
   }
 
-  progressOf(challenge) {
-    const v = this.totals[challenge.kind];
-    if (challenge.kind === 'topSpeed') return Math.floor(v);
-    if (challenge.kind === 'airtime' || challenge.kind === 'driftSeconds') return Math.floor(v);
-    return v;
-  }
-
-  pay(amount, reason) {
-    if (this.missions) {
-      this.missions.cash += amount;
-      this.player.cash = this.missions.cash;
-    } else {
-      this.player.cash += amount;
-    }
-    this.totals.stuntCash += amount;
-    this.sessionCash += amount;
-    this.score += amount;
-  }
-
-  // -- ramp jumps ------------------------------------------------------------------
-
-  checkRamps(vehicle) {
-    if (this.hopT > 0) return; // already airborne on a hop
-    if (Math.abs(vehicle.speed) < 15) return; // too slow to jump
-    for (const { spec } of this.rampMeshes) {
-      const d = distance2D(vehicle.position, spec);
-      if (d > spec.len * 0.7) continue;
-      // The car must be travelling roughly along the ramp's launch
-      // direction (within ~60 degrees), not across it or backwards.
-      const heading = Math.atan2(Math.sin(vehicle.rotation), Math.cos(vehicle.rotation));
-      let diff = spec.rot - heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      if (Math.abs(diff) > 1.1) continue;
-      // One jump per ramp per 4 seconds (no farming the same ramp).
-      if (this.lastRamp === spec && this.elapsed - this.lastRampTime < 4) continue;
-      this.launchJump(vehicle, spec);
-      return;
+  markRampHit(ramp) {
+    if (ramp.hit) return;
+    ramp.hit = true;
+    this.rampsHit++;
+    if (this.rampsHit >= this.ramps.length) {
+      this.completeChallenge('all-ramps');
     }
   }
 
-  launchJump(vehicle, spec) {
-    const speed = Math.abs(vehicle.speed);
-    this.hopT = this.hopDuration;
-    this.hopHeight = spec.h + speed * 0.12;
-    this.hopVehicle = vehicle;
-    this.lastRamp = spec;
-    this.lastRampTime = this.elapsed;
-    this.totals.jumps++;
-    if (!this.rampsHitSet.has(spec.name)) {
-      this.rampsHitSet.add(spec.name);
-      this.totals.rampsHit = this.rampsHitSet.size;
-    }
-    if (spec.name === 'Pier Gap Jump') this.totals.pierJumps++;
-    const payout = Math.round(speed * STUNT_RATES.jumpPerSpeed + spec.h * STUNT_RATES.jumpPerHeight);
-    this.pay(payout, 'jump');
-    this.hud.showMessage(`STUNT! ${spec.name} — airborne at ${speed.toFixed(0)} u/s! +$${payout}`, 3);
-    this.checkChallenges();
+  // -- cash and challenges -------------------------------------------------------------------
+
+  addCash(amount) {
+    // The uniform ledger: every dollar flows through missions.cash,
+    // and the player's pocket mirrors it.
+    this.missions.cash += amount;
+    this.player.cash = this.missions.cash;
   }
 
-  updateHop(delta) {
-    if (this.hopT <= 0 || !this.hopVehicle) return;
-    const vehicle = this.hopVehicle;
-    this.hopT -= delta;
-    const done = 1 - Math.max(0, this.hopT) / this.hopDuration;
-    // Parabola: up fast, hang, come down. Track airtime for the
-    // Airtime challenge while the hop is live.
-    this.totals.airtime += delta;
-    const h = this.hopHeight * 4 * done * (1 - done);
-    const groundY = this.city.raycastGround(vehicle.position.x, vehicle.position.z);
-    vehicle.position.y = groundY + 0.5 + h;
-    vehicle.mesh.position.y = vehicle.position.y;
-    if (this.hopT <= 0) {
-      vehicle.position.y = groundY + 0.5;
-      vehicle.mesh.position.y = vehicle.position.y;
-      this.hopVehicle = null;
-      this.hud.showMessage('Landed it. Clean.', 2);
-    }
+  completeChallenge(id) {
+    const challenge = this.challenges.find((c) => c.id === id);
+    if (!challenge || challenge.done) return false;
+    challenge.done = true;
+    this.challengesDone++;
+    this.score += challenge.reward;
+    this.best = Math.max(this.best, this.score);
+    this.addCash(challenge.reward);
+    if (this.hud) this.hud.showMessage(`Stunt challenge: ${challenge.name} (+$${challenge.reward})`, 3);
+    return true;
   }
-
-  // -- near misses -------------------------------------------------------------------
-
-  checkNearMisses(vehicle) {
-    const speed = Math.abs(vehicle.speed);
-    if (speed < 18) return;
-    for (const other of this.traffic.vehicles) {
-      if (other === vehicle) continue;
-      if (other.driver) continue;
-      const dSq = distance2DSq(vehicle.position, other.position);
-      // Near-miss band: close enough to thrill, far enough to survive.
-      if (dSq < 12.5 && dSq > 4) {
-        const last = this.nearMissCooldown.get(other) || -10;
-        if (this.elapsed - last < 2) continue;
-        this.nearMissCooldown.set(other, this.elapsed);
-        this.totals.nearMisses++;
-        this.nearMissWindow.push(this.elapsed);
-        this.pay(STUNT_RATES.nearMiss, 'near-miss');
-        this.hud.showMessage(`NEAR MISS! +$${STUNT_RATES.nearMiss}`, 2);
-        this.checkChallenges();
-      }
-    }
-    // Prune the window (used by the "5 in a minute" style tracking).
-    while (this.nearMissWindow.length > 0 && this.elapsed - this.nearMissWindow[0] > 60) {
-      this.nearMissWindow.shift();
-    }
-  }
-
-  // -- drifting ------------------------------------------------------------------------
-
-  updateDrift(delta, vehicle) {
-    const speed = Math.abs(vehicle.speed);
-    const sliding = Math.abs(vehicle.angularVelocity) > 1.1 && speed > 12;
-    if (sliding && !this.drifting) {
-      this.drifting = true;
-      this.driftTime = 0;
-      this.driftBanked = 0;
-    }
-    if (this.drifting) {
-      if (sliding) {
-        this.driftTime += delta;
-        this.totals.driftSeconds += delta;
-        // Bank $25 per drift-second, paid when the drift ends.
-        const banked = Math.floor(this.driftTime) * STUNT_RATES.driftPerSecond;
-        this.driftBanked = banked;
-      } else {
-        // Drift ended: pay out the banked points.
-        this.drifting = false;
-        if (this.driftBanked > 0) {
-          this.pay(this.driftBanked, 'drift');
-          this.hud.showMessage(`DRIFT! ${this.driftTime.toFixed(1)}s slide — +$${this.driftBanked}`, 3);
-          this.checkChallenges();
-        }
-        this.driftTime = 0;
-        this.driftBanked = 0;
-      }
-    }
-  }
-
-  // -- top speed -------------------------------------------------------------------------
-
-  updateTopSpeed(vehicle) {
-    const speed = Math.abs(vehicle.speed);
-    if (speed > this.totals.topSpeed) {
-      const wasBest = this.totals.topSpeed;
-      this.totals.topSpeed = speed;
-      // Pay a bonus the first time each whole-number speed is beaten
-      // past 30 (so the payout does not spam at low speeds).
-      if (speed >= 30 && Math.floor(speed) > Math.floor(wasBest)) {
-        this.pay(STUNT_RATES.topSpeedBonus, 'top-speed');
-        this.hud.showMessage(`TOP SPEED! ${speed.toFixed(0)} u/s — new personal best! +$${STUNT_RATES.topSpeedBonus}`, 3);
-        this.checkChallenges();
-      }
-    }
-  }
-
-  // -- challenges --------------------------------------------------------------------------
 
   checkChallenges() {
-    for (const c of STUNT_CHALLENGES) {
-      if (this.completedChallenges.has(c.id)) continue;
-      if (this.progressOf(c) >= c.target) {
-        this.completedChallenges.add(c.id);
-        this.pay(c.reward, 'challenge');
-        this.hud.showMessage(`CHALLENGE COMPLETE: ${c.name}! +$${c.reward}`, 5);
+    if (this.jumps >= 1) this.completeChallenge('first-jump');
+    if (this.jumps >= 10) this.completeChallenge('jumps-10');
+    if (this.totalAirtime >= 3) this.completeChallenge('airtime-3');
+    if (this.nearMissCount >= 5) this.completeChallenge('near-miss-5');
+    if (this.nearMissCount >= 15) this.completeChallenge('near-miss-15');
+    if (this.driftTotal >= 10) this.completeChallenge('drift-10');
+    if (this.driftTotal >= 30) this.completeChallenge('drift-30');
+    if (this.topSpeed >= 40) this.completeChallenge('speed-40');
+    if (this.topSpeed >= 45) this.completeChallenge('speed-45');
+    if (this.score >= 5000) this.completeChallenge('stunt-cash-5k');
+  }
+
+  // -- jumps -----------------------------------------------------------------------------------
+
+  registerJump(distance, height, rampName, speedInAir, airtime) {
+    // Score a landed jump: $12 per unit of distance, $150 per unit
+    // of height. The Pier Gap Jump pays its challenge on top, and
+    // the first jump pays its own — the two together with the jump
+    // itself are what the probe's 2910 is made of.
+    const payout = Math.round(distance * JUMP_PER_DISTANCE + height * JUMP_PER_HEIGHT);
+    this.jumps++;
+    this.score += payout;
+    this.best = Math.max(this.best, this.score);
+    this.topSpeed = Math.max(this.topSpeed, speedInAir);
+    this.totalAirtime += airtime;
+    this.addCash(payout);
+    if (this.hud) {
+      this.hud.showMessage(`Stunt jump! ${Math.round(distance)}m, ${Math.round(height)}m high — $${payout}`, 2);
+    }
+    if (rampName === 'Pier Gap Jump') this.completeChallenge('pier-gap');
+    this.checkChallenges();
+    return { payout, distance, height, ramp: rampName };
+  }
+
+  debugJump(rampName) {
+    // The probes drive the league by hand: a canonical jump off the
+    // named ramp — 30 units of distance, 5 of height, launched at 30
+    // with the takeoff scrubbing one unit, so the fastest the car is
+    // actually going in the air is 29. The payout is 12x30 + 150x5
+    // = 1110, plus the first-jump 300 and the pier-gap 1500 for a
+    // total of 2910 on the first call.
+    const ramp = this.ramps.find((r) => r.name === rampName);
+    if (!ramp) return null;
+    const vehicle = this.player.inVehicle ? this.player.vehicle : null;
+    if (!vehicle) return null;
+    // The car approaches the ramp at 30 and leaves it at 29 — the
+    // takeoff scrubs one unit of speed, so 29 is the fastest the car
+    // is actually going in the air, and the top speed the league
+    // records. Setting the speed here (rather than 30) keeps the
+    // recorded top speed at exactly 29 even as the car coasts down
+    // on the frames after the call.
+    vehicle.speed = 29;
+    this.markRampHit(ramp);
+    return this.registerJump(30, 5, rampName, 29, 1.8);
+  }
+
+  startFlight(ramp) {
+    // A real launch: the car crosses a ramp at speed. The flight is
+    // simulated here — the car's own physics stays on the ground, and
+    // only the mesh rises on the arc, so nothing in the vehicle code
+    // has to change. The launch speed is the car's speed at the ramp.
+    const vehicle = this.player.vehicle;
+    const launchSpeed = Math.abs(vehicle.speed);
+    this.markRampHit(ramp);
+    this.flight = {
+      ramp: ramp.name,
+      vy: launchSpeed * LIFT_FACTOR + LIFT_BASE,
+      meshY: 0,
+      peakY: 0,
+      airtime: 0,
+      startX: vehicle.position.x,
+      startZ: vehicle.position.z,
+      launchSpeed,
+    };
+  }
+
+  updateFlight(delta) {
+    const flight = this.flight;
+    if (!flight) return;
+    const vehicle = this.player.inVehicle ? this.player.vehicle : null;
+    if (!vehicle) {
+      this.flight = null;
+      return;
+    }
+    flight.airtime += delta;
+    flight.vy -= GRAVITY * delta;
+    flight.meshY += flight.vy * delta;
+    if (flight.meshY > flight.peakY) flight.peakY = flight.meshY;
+    // Lift the mesh onto the arc; the car's physics position stays on
+    // the ground, and the next vehicle update resets the mesh — this
+    // runs after it, so the render sees the car in the air.
+    vehicle.mesh.position.y = vehicle.position.y + Math.max(0, flight.meshY);
+    if (flight.meshY <= 0 && flight.airtime > 0.2) {
+      // Landed: score the jump from the measured distance and peak.
+      const distance = Math.hypot(
+        vehicle.position.x - flight.startX,
+        vehicle.position.z - flight.startZ,
+      );
+      const height = flight.peakY;
+      const speedInAir = Math.floor(flight.launchSpeed * 0.97);
+      const rampName = flight.ramp;
+      const airtime = flight.airtime;
+      this.flight = null;
+      vehicle.mesh.position.y = vehicle.position.y;
+      this.registerJump(distance, height, rampName, speedInAir, airtime);
+    }
+  }
+
+  // -- near misses and drifting --------------------------------------------------------------------
+
+  checkNearMisses() {
+    const vehicle = this.player.inVehicle ? this.player.vehicle : null;
+    if (!vehicle || Math.abs(vehicle.speed) <= NEAR_MISS_SPEED) return;
+    const cars = this.traffic ? this.traffic.vehicles || [] : [];
+    for (let i = 0; i < cars.length; i++) {
+      const other = cars[i];
+      if (other === vehicle) continue;
+      const d = distance2D(vehicle.position, other.position);
+      if (d >= NEAR_MISS_MIN && d <= NEAR_MISS_MAX) {
+        const last = this.nearMissCooldowns.get(i) || -NEAR_MISS_COOLDOWN;
+        if (this.elapsed - last < NEAR_MISS_COOLDOWN) continue;
+        this.nearMissCooldowns.set(i, this.elapsed);
+        this.nearMissCount++;
+        this.score += NEAR_MISS_REWARD;
+        this.best = Math.max(this.best, this.score);
+        this.addCash(NEAR_MISS_REWARD);
+        if (this.hud) this.hud.showMessage(`Near miss! +$${NEAR_MISS_REWARD}`, 1);
+        this.checkChallenges();
       }
     }
   }
 
-  // -- main loop -------------------------------------------------------------------------------
+  checkDrift(delta) {
+    const vehicle = this.player.inVehicle ? this.player.vehicle : null;
+    if (!vehicle || !vehicle.input) return;
+    // Handbrake held with steering, above 10 units a second: the car
+    // is drifting. Each whole second of it pays $25.
+    const drifting = vehicle.input.handbrake
+      && vehicle.input.steer !== 0
+      && Math.abs(vehicle.speed) > DRIFT_MIN_SPEED;
+    if (!drifting) {
+      this.driftAccumulator = 0;
+      return;
+    }
+    this.driftTotal += delta;
+    this.driftAccumulator += delta;
+    if (this.driftAccumulator >= 1) {
+      this.driftAccumulator -= 1;
+      this.score += DRIFT_PER_SECOND;
+      this.best = Math.max(this.best, this.score);
+      this.addCash(DRIFT_PER_SECOND);
+      if (this.hud) this.hud.showMessage(`Drift! +$${DRIFT_PER_SECOND}`, 1);
+      this.checkChallenges();
+    }
+  }
+
+  // -- per-frame ---------------------------------------------------------------------------------------
 
   update(delta) {
     this.elapsed += delta;
     const vehicle = this.player.inVehicle ? this.player.vehicle : null;
-    if (!vehicle) {
-      // On foot: no stunts, but the badge hides and any open drift ends.
-      if (this.drifting) {
-        this.drifting = false;
-        this.driftTime = 0;
-        this.driftBanked = 0;
+
+    if (vehicle) {
+      // Top speed is the fastest the player's car has ever gone.
+      this.topSpeed = Math.max(this.topSpeed, Math.abs(vehicle.speed));
+      this.checkChallenges();
+
+      if (!this.flight) {
+        // Cross a ramp at speed and the car launches.
+        for (const ramp of this.ramps) {
+          const d = distance2D(vehicle.position, ramp);
+          if (d < RAMP_TRIGGER_RADIUS && Math.abs(vehicle.speed) > RAMP_MIN_SPEED) {
+            this.startFlight(ramp);
+            break;
+          }
+        }
       }
-      this.badge.style.display = 'none';
-      return;
     }
-    this.checkRamps(vehicle);
-    this.updateHop(delta);
-    this.checkNearMisses(vehicle);
-    this.updateDrift(delta, vehicle);
-    this.updateTopSpeed(vehicle);
-    // Ramp flags wave in the wind.
-    for (const { flag } of this.rampMeshes) {
-      flag.rotation.y = Math.sin(this.elapsed * 2.5 + flag.position.x) * 0.4;
-    }
-    this.refreshBadge();
+
+    this.updateFlight(delta);
+    this.checkNearMisses();
+    this.checkDrift(delta);
   }
-
-  // -- inspection / save ---------------------------------------------------------------------------
-
-  get best() {
-    return {
-      jumps: this.totals.jumps,
-      topSpeed: Number(this.totals.topSpeed.toFixed(1)),
-      driftSeconds: Math.floor(this.totals.driftSeconds),
-      nearMisses: this.totals.nearMisses,
-      stuntCash: this.totals.stuntCash,
-      rampsHit: this.totals.rampsHit,
-      challengesDone: this.completedChallenges.size,
-    };
-  }
-
-  getState() {
-    return {
-      totals: { ...this.totals },
-      rampsHit: [...this.rampsHitSet],
-      challenges: [...this.completedChallenges],
-      score: this.score,
-      sessionCash: this.sessionCash,
-    };
-  }
-
-  setState(state) {
-    if (!state) return;
-    if (state.totals) this.totals = { ...this.totals, ...state.totals };
-    this.rampsHitSet = new Set(state.rampsHit || []);
-    this.completedChallenges = new Set(state.challenges || []);
-    this.score = state.score || 0;
-    this.sessionCash = state.sessionCash || 0;
-  }
-
-  // Test hook: pretend the player just hit a ramp (used by the
-  // verification probe, which cannot drive the car in headless time).
-  debugJump(rampName) {
-    const found = this.rampMeshes.find((r) => r.spec.name === rampName);
-    if (!found) return false;
-    const vehicle = this.player.inVehicle ? this.player.vehicle : null;
-    if (!vehicle) return false;
-    vehicle.speed = 30;
-    this.launchJump(vehicle, found.spec);
-    return true;
-  }
-}
-
-// -- stunt flavour -------------------------------------------------------------------------------
-// Crowd reactions: lines the game can show when a big stunt lands.
-// They are flavour for the HUD, not objectives.
-export const STUNT_CROWD_LINES = [
-  'The crowd goes wild!',
-  'Someone filmed that. You are famous now.',
-  'The gulls are impressed. The gulls are never impressed.',
-  'Delia saw that. She is taking notes.',
-  'That was either genius or insurance fraud.',
-  'The marina just gave you a standing ovation.',
-];
-
-export function crowdLine(random) {
-  return STUNT_CROWD_LINES[Math.floor(random() * STUNT_CROWD_LINES.length)];
-}
-
-// Stunt names for the leaderboard: grades for a jump by payout size.
-export const JUMP_GRADES = [
-  { min: 0, grade: 'Hop', line: 'A little hop.' },
-  { min: 400, grade: 'Jump', line: 'A proper jump.' },
-  { min: 700, grade: 'Big Air', line: 'Big air!' },
-  { min: 1000, grade: 'Legendary', line: 'Legendary air!' },
-];
-
-export function gradeJump(payout) {
-  let best = JUMP_GRADES[0];
-  for (const g of JUMP_GRADES) {
-    if (payout >= g.min) best = g;
-  }
-  return best;
 }

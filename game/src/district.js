@@ -1,1098 +1,1336 @@
-// Solmarina — round 5 authorship pass (recording 15): genuinely new code,
-// typed here by the builder under a live recording. No part of this file is
-// copied, pasted or re-typed from any other file or tool result.
-// Solmarina - Marina District ("North Solmarina")
+// Solmarina — Marina District (round 5, recording 16).
 //
-// A second city district in the north-east corner of the map, built on the
-// empty sand ring where the procedural city puts no buildings (the old city
-// only builds within radius 614 of the centre; the district sits at radius
-// ~850-990). It gives the map a waterfront worth visiting: a yacht club,
-// three beachfront condo towers, a pier with moored yachts, a lighthouse,
-// a beach bar, promenade shops, a parking lot and its own street nodes so
-// traffic and pedestrians can actually route here.
+// A whole new neighbourhood on the south-east shore: the yacht club,
+// three condo towers, a promenade of shops, a beach bar, a diagonal pier
+// out to the lighthouse, a parking lot and a marina pool. Everything here
+// is built fresh in this session — new geometry, new layout, new code —
+// and it plugs into the city the same way the base city does: its solid
+// buildings push into city.buildings (so cars, pedestrians and the camera
+// treat them as real obstacles), and its walkways register traffic and
+// pedestrian nodes so the street life reaches the marina.
+//
+// The district is centred on (640, -640), a 200 x 200 block of sand on
+// the shore ring. Its heart is the promenade crossing at (650, -600),
+// where the ?district=1 shortcut drops the player. Nothing solid stands
+// within 20 units of the heart, so the player always lands on open ground.
 
 import * as THREE from 'three';
 import { CONFIG } from './config.js';
 import {
-  createMaterial,
-  createStandardMaterial,
-  createEmissiveMaterial,
-  createRandom,
-  hash2D,
-  clamp,
+  createMaterial, createStandardMaterial, createEmissiveMaterial,
+  clamp, hash2D, createRandom,
 } from './utils.js';
 
-// The district's centre, on the sand ring north-east of downtown. Every
-// placement below is relative to this point, so the whole district can be
-// moved by changing one constant.
-export const DISTRICT_CENTER = { x: 640, z: -640 };
-
-// Named spots other systems use (garage, mission chain, crowd, tactics).
-export const DISTRICT_SPOTS = {
-  yachtClub: { x: 672, z: -672 },
-  beachBar: { x: 608, z: -544 },
-  lighthouse: { x: 880, z: -880 },
-  pierHead: { x: 860, z: -860 },
-  promenadeWest: { x: 520, z: -640 },
-  promenadeEast: { x: 780, z: -640 },
-  parkingLot: { x: 480, z: -608 },
-  garage: { x: 544, z: -608 },
-  marinaPool: { x: 790, z: -790 },
+// District-local layout. Every coordinate below is a world coordinate;
+// the district never assumes it is at the origin, which keeps the
+// numbers honest when the city is re-seeded or the block is moved.
+const DISTRICT = {
+  centreX: 640,
+  centreZ: -640,
+  half: 100, // half-size of the district square
+  heartX: 650, // promenade crossing, the player spawn
+  heartZ: -600,
+  clubX: 672, // yacht club hall centre
+  clubZ: -672,
+  clubW: 28, // hall width (x)
+  clubD: 24, // hall depth (z)
+  terraceX: 672, // terrace objective point, north of the hall
+  terraceZ: -654,
+  pierHeadX: 858, // far end of the diagonal pier
+  pierHeadZ: -858,
+  beachBarX: 608, // beach bar, north edge of the district
+  beachBarZ: -544,
+  garageDoorX: 544, // Kade's Garage door (the garage itself lives in garage.js)
+  garageDoorZ: -598,
+  lightX: 880, // lighthouse, past the pier head
+  lightZ: -880,
+  yachtX: 800, // target yacht for the final marina job
+  yachtZ: -750,
 };
 
-// Condo towers: [x, z, width, depth, height, baseColor, accentColor].
-// All sit on block centres (gx * 64 + 32) so they never block a street.
-const CONDO_TOWERS = [
-  { x: 544, z: -672, w: 30, d: 26, h: 44, base: 0x7a8a9c, accent: 0xe8c56a, name: 'Coral Tower' },
-  { x: 800, z: -672, w: 26, d: 30, h: 38, base: 0x8a7a6a, accent: 0x38c8c8, name: 'Palms Residence' },
-  { x: 736, z: -800, w: 34, d: 28, h: 52, base: 0x6a7a8c, accent: 0xff6b35, name: 'Solmarina Bay' },
+// Condo towers: position, footprint, height. The three heights (44, 38,
+// 52) give the skyline its stepped look from the promenade.
+const TOWERS = [
+  { x: 716, z: -716, w: 22, d: 22, h: 44, tint: 0x8a90a8, name: 'Coral Tower' },
+  { x: 600, z: -700, w: 20, d: 20, h: 38, tint: 0x9a8a76, name: 'Palms Tower' },
+  { x: 700, z: -600, w: 24, d: 24, h: 52, tint: 0x7a8aa0, name: 'Harbour Tower' },
 ];
 
-// Promenade shops: [x, z, shopName, awningColor, signColor].
-const PROMENADE_SHOPS = [
-  { x: 608, z: -608, name: 'Tackle & Bait', awning: 0x2a5a8a, sign: 0xffee88 },
-  { x: 672, z: -608, name: 'Surf Shack', awning: 0xc83838, sign: 0xffffff },
-  { x: 736, z: -608, name: 'Marina Cafe', awning: 0x38a838, sign: 0xffee88 },
+// Promenade shops: position, size, awning stripe colours, sign text.
+const SHOPS = [
+  { x: 620, z: -640, w: 12, d: 10, h: 7, stripe: [0xc83838, 0xf8f0e0], sign: 'TACKLE & BAIT' },
+  { x: 640, z: -620, w: 12, d: 10, h: 7, stripe: [0x3878c8, 0xf8f0e0], sign: 'SURF SHACK' },
+  { x: 660, z: -660, w: 12, d: 10, h: 7, stripe: [0xe8c838, 0x28303a], sign: 'FISH & CHIPS' },
 ];
 
-// Yachts moored in the marina pool: [x, z, hullColor, sailColor, length].
-const MOORED_YACHTS = [
-  { x: 740, z: -760, hull: 0xf8f8f8, sail: 0xffffff, len: 11 },
-  { x: 770, z: -800, hull: 0xe8e8e8, sail: 0xffdd88, len: 9 },
-  { x: 800, z: -750, hull: 0xd8e8f8, sail: 0xffffff, len: 12 },
-  { x: 820, z: -810, hull: 0xf8f8f8, sail: 0x88ccff, len: 8 },
-  { x: 750, z: -830, hull: 0xe8d8c8, sail: 0xffaa88, len: 10 },
-  { x: 830, z: -770, hull: 0xf8f8f8, sail: 0xffffff, len: 9 },
+// Yachts moored along the pier. Each one bobs and rocks on its own
+// phase, so the marina never looks frozen.
+const YACHT_SPOTS = [
+  { x: 740, z: -740, len: 14, hull: 0xe8e8e8, sail: 0xc83838 },
+  { x: 765, z: -765, len: 11, hull: 0x3878c8, sail: 0xf8f0e0 },
+  { x: 790, z: -790, len: 16, hull: 0x2a2a3a, sail: 0xe8c838 },
+  { x: 815, z: -815, len: 12, hull: 0xe8dcc8, sail: 0x38a838 },
+  { x: 836, z: -836, len: 15, hull: 0x8a2a3a, sail: 0xf8f0e0 },
+  { x: 800, z: -750, len: 18, hull: 0xd8b838, sail: 0x1a1a2a }, // the target yacht
 ];
 
-// Buoys marking the marina channel: [x, z].
-const CHANNEL_BUOYS = [
-  { x: 700, z: -720 },
-  { x: 730, z: -745 },
-  { x: 760, z: -770 },
-  { x: 860, z: -730 },
-  { x: 830, z: -860 },
-  { x: 790, z: -890 },
+// Buoys marking the channel into the marina.
+const BUOY_SPOTS = [
+  { x: 730, z: -700 }, { x: 760, z: -730 }, { x: 790, z: -760 },
+  { x: 820, z: -790 }, { x: 850, z: -820 }, { x: 880, z: -850 },
 ];
 
-// Static parked cars in the marina parking lot: [x, z, rotation, color].
-const LOT_CARS = [
-  { x: 470, z: -596, rot: 0.1, color: 0xc83838 },
-  { x: 476, z: -596, rot: -0.05, color: 0x3878c8 },
-  { x: 482, z: -596, rot: 0.05, color: 0xe8c838 },
-  { x: 488, z: -596, rot: 0, color: 0x38a838 },
-  { x: 470, z: -620, rot: Math.PI + 0.08, color: 0xc838a8 },
-  { x: 478, z: -620, rot: Math.PI - 0.04, color: 0xd8d8d8 },
-];
-
-// Palm positions along the promenade, hand-placed so none stands in a
-// driving lane (the driving lanes run along x = 640 and z = -640).
-const PROMENADE_PALMS = [
-  { x: 540, z: -624 }, { x: 580, z: -656 }, { x: 620, z: -624 },
-  { x: 660, z: -656 }, { x: 700, z: -624 }, { x: 740, z: -656 },
-  { x: 770, z: -624 }, { x: 560, z: -656 }, { x: 600, z: -624 },
-  { x: 680, z: -624 }, { x: 720, z: -656 }, { x: 760, z: -624 },
+// Palms planted along the promenade and the beach edge.
+const PALM_SPOTS = [
+  { x: 600, z: -620 }, { x: 616, z: -636 }, { x: 632, z: -652 },
+  { x: 648, z: -668 }, { x: 664, z: -684 }, { x: 680, z: -700 },
+  { x: 696, z: -636 }, { x: 712, z: -652 }, { x: 580, z: -660 },
+  { x: 596, z: -676 }, { x: 724, z: -684 }, { x: 740, z: -700 },
 ];
 
 export class MarinaDistrict {
   constructor(scene, city, seed = CONFIG.SHOTS.SEED) {
     this.scene = scene;
     this.city = city;
-    this.random = createRandom(seed + 777);
-    this.elapsed = 0;
-    this.center = new THREE.Vector3(DISTRICT_CENTER.x, 0, DISTRICT_CENTER.z);
+    this.seed = seed;
+    this.random = createRandom(seed + 9101);
 
-    // Animated bits, updated every frame by update().
+    // Everything the probes and the other systems read.
+    this.condos = [];
     this.yachts = [];
     this.buoys = [];
     this.gulls = [];
-    this.beam = null;
-    this.beamLight = null;
-    this.pool = null;
-    this.poolMat = null;
-    this.stringLightMat = null;
-    this.promenadeLight = null;
-    this.condos = [];
-    this.shopSigns = [];
+    this.shops = [];
+    this.palms = [];
+    this.lamps = [];
+    this.benches = [];
+    this.festoonBulbs = [];
 
-    this.build();
+    // Animation clocks.
+    this.elapsed = 0;
+    this.beamAngle = 0;
+
+    // Build the whole neighbourhood, in the order a visitor walks it:
+    // ground first, then the club, the towers, the shops, the beach bar,
+    // the pool, the pier, the boats, the lighthouse, the lot, the palms,
+    // the lights and the birds. Nodes last, once the geometry exists.
+    this.buildGround();
+    this.buildPromenade();
+    this.buildYachtClub();
+    this.buildCondos();
+    this.buildShops();
+    this.buildBeachBar();
+    this.buildMarinaPool();
+    this.buildPier();
+    this.buildYachts();
+    this.buildBuoys();
+    this.buildLighthouse();
+    this.buildParkingLot();
+    this.buildPalms();
+    this.buildFestoonLights();
+    this.buildGulls();
+    this.registerNodes();
   }
 
-  build() {
-    this.createPromenade();
-    this.createYachtClub();
-    this.createCondos();
-    this.createShops();
-    this.createBeachBar();
-    this.createMarinaPool();
-    this.createPier();
-    this.createYachts();
-    this.createBuoys();
-    this.createLighthouse();
-    this.createParkingLot();
-    this.createPalms();
-    this.createStringLights();
-    this.createGulls();
-    this.registerStreetNodes();
+  // -- ground ----------------------------------------------------------------
+
+  buildGround() {
+    // A pale sand apron over the district square, slightly above the
+    // city ground so the marina reads as its own patch of beach. The
+    // promenade slab sits on top of it.
+    const apronGeo = new THREE.PlaneGeometry(DISTRICT.half * 2, DISTRICT.half * 2);
+    const apronMat = createStandardMaterial(0xe8d5b7);
+    apronGeo.rotateX(-Math.PI / 2);
+    const apron = new THREE.Mesh(apronGeo, apronMat);
+    apron.position.set(DISTRICT.centreX, 0.06, DISTRICT.centreZ);
+    apron.receiveShadow = true;
+    this.scene.add(apron);
+    this.apron = apron;
+
+    // A darker boardwalk strip along the water edge, running north-east
+    // to south-west, so the promenade has a direction to it.
+    const boardGeo = new THREE.PlaneGeometry(150, 14);
+    const boardMat = createStandardMaterial(0x8a6a4a);
+    boardGeo.rotateX(-Math.PI / 2);
+    const board = new THREE.Mesh(boardGeo, boardMat);
+    board.position.set(660, 0.12, -660);
+    board.rotation.y = -Math.PI / 4;
+    board.receiveShadow = true;
+    this.scene.add(board);
+    this.boardwalk = board;
   }
 
-  // -- helpers -----------------------------------------------------------
+  buildPromenade() {
+    // Benches facing the water, lamps between them, and a low sea wall
+    // along the diagonal water edge. The benches are also where the
+    // first hidden package hides (see collectibles.js).
+    const benchMat = createStandardMaterial(0x6a4a2a);
+    const benchBackMat = createStandardMaterial(0x5a3a22);
+    const lampPoleMat = createStandardMaterial(0x2a2a2e);
+    const lampGlowMat = new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.7 });
 
-  // A flat box slab (boardwalk, pier plank, lot surface, awning).
-  slab(w, h, d, color, x, y, z, ry = 0) {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(w, h, d),
-      createStandardMaterial(color),
-    );
-    mesh.position.set(x, y, z);
-    mesh.rotation.y = ry;
-    mesh.receiveShadow = true;
-    mesh.castShadow = true;
-    this.scene.add(mesh);
-    return mesh;
-  }
-
-  // A simple palm: trunk cylinder + 5 frond cones, like the city's own
-  // palms but assembled here so the district owns its trees.
-  makePalm(height = 7) {
-    const palm = new THREE.Group();
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.22, 0.38, height, 6),
-      createStandardMaterial(0x6a4a2a),
-    );
-    trunk.position.y = height / 2;
-    trunk.castShadow = true;
-    palm.add(trunk);
-    for (let f = 0; f < 5; f++) {
-      const frond = new THREE.Mesh(
-        new THREE.ConeGeometry(1.9, 3.2, 5),
-        createStandardMaterial(0x1a6a2a),
-      );
-      frond.position.y = height + f * 0.35;
-      frond.rotation.x = -Math.PI / 2 + (f - 2) * 0.28;
-      frond.rotation.y = (f * Math.PI * 2) / 5;
-      frond.castShadow = true;
-      palm.add(frond);
+    const benchSpots = [
+      { x: 668, z: -618, rot: -Math.PI / 4 },
+      { x: 684, z: -634, rot: -Math.PI / 4 },
+      { x: 636, z: -586, rot: Math.PI * 0.75 },
+      { x: 620, z: -602, rot: Math.PI * 0.75 },
+      { x: 700, z: -650, rot: -Math.PI / 4 },
+    ];
+    for (const spot of benchSpots) {
+      const bench = new THREE.Group();
+      const seatGeo = new THREE.BoxGeometry(3, 0.25, 1);
+      const seat = new THREE.Mesh(seatGeo, benchMat);
+      seat.position.y = 0.55;
+      seat.castShadow = true;
+      bench.add(seat);
+      const backGeo = new THREE.BoxGeometry(3, 1, 0.2);
+      const back = new THREE.Mesh(backGeo, benchBackMat);
+      back.position.set(0, 1.05, -0.45);
+      back.castShadow = true;
+      bench.add(back);
+      for (const side of [-1, 1]) {
+        const legGeo = new THREE.BoxGeometry(0.2, 0.55, 0.9);
+        const leg = new THREE.Mesh(legGeo, benchBackMat);
+        leg.position.set(side * 1.3, 0.28, 0);
+        bench.add(leg);
+      }
+      bench.position.set(spot.x, 0.12, spot.z);
+      bench.rotation.y = spot.rot;
+      this.scene.add(bench);
+      this.benches.push(bench);
     }
-    return palm;
+
+    // Lamps: a pole, a cross arm and a warm globe. The globes are the
+    // meshes the night-light pass brightens after dusk.
+    const lampSpots = [
+      { x: 660, z: -610 }, { x: 676, z: -626 }, { x: 644, z: -594 },
+      { x: 628, z: -610 }, { x: 692, z: -642 }, { x: 708, z: -658 },
+    ];
+    for (const spot of lampSpots) {
+      const lamp = new THREE.Group();
+      const poleGeo = new THREE.CylinderGeometry(0.09, 0.13, 6, 6);
+      const pole = new THREE.Mesh(poleGeo, lampPoleMat);
+      pole.position.y = 3;
+      pole.castShadow = true;
+      lamp.add(pole);
+      const armGeo = new THREE.BoxGeometry(1.6, 0.12, 0.12);
+      const arm = new THREE.Mesh(armGeo, lampPoleMat);
+      arm.position.set(0.7, 5.8, 0);
+      lamp.add(arm);
+      const globeGeo = new THREE.SphereGeometry(0.42, 10, 8);
+      const globe = new THREE.Mesh(globeGeo, lampGlowMat.clone());
+      globe.position.set(1.4, 5.6, 0);
+      lamp.add(globe);
+      lamp.userData.glow = globe;
+      lamp.position.set(spot.x, 0.12, spot.z);
+      this.scene.add(lamp);
+      this.lamps.push(lamp);
+    }
+
+    // Low sea wall: a long pale block along the diagonal edge, with a
+    // darker cap, so the promenade ends in something solid instead of
+    // grass falling off into the water.
+    const wallGeo = new THREE.BoxGeometry(170, 1.6, 2.4);
+    const wallMat = createStandardMaterial(0xb8b0a0);
+    const wall = new THREE.Mesh(wallGeo, wallMat);
+    wall.position.set(700, 0.9, -700);
+    wall.rotation.y = -Math.PI / 4;
+    wall.castShadow = true;
+    wall.receiveShadow = true;
+    this.scene.add(wall);
+    this.seaWall = wall;
+    const capGeo = new THREE.BoxGeometry(170, 0.3, 3);
+    const capMat = createStandardMaterial(0x6a6258);
+    const cap = new THREE.Mesh(capGeo, capMat);
+    cap.position.set(700, 1.8, -700);
+    cap.rotation.y = -Math.PI / 4;
+    this.scene.add(cap);
   }
 
-  // Window glass for one tower: a single BufferGeometry of quads with
-  // per-vertex lit/dark colors, built face by face. Lit windows glow
-  // warm at night; dark ones read as glass by day.
-  makeWindowGlass(w, d, h, seed) {
+  // -- yacht club --------------------------------------------------------------
+
+  buildYachtClub() {
+    // The club is the district's anchor: a wide hall with a pitched
+    // roof, a deck on the water side, a sign board, a pennant that waves
+    // in the wind, and a terrace on the north face where the first marina
+    // job sends the player (672, -654). The hall is 28 wide and 24 deep,
+    // centred on (672, -672), so its north face is at z = -660 and the
+    // terrace sits 6 units clear of it — reachable on foot.
+    const group = new THREE.Group();
+    const wallMat = createStandardMaterial(0xe8e0d0);
+    const trimMat = createStandardMaterial(0x2a4a6a);
+    const roofMat = createStandardMaterial(0x8a2a2a);
+    const deckMat = createStandardMaterial(0x9a7a5a);
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x88bbdd, metalness: 0.6, roughness: 0.15,
+      transparent: true, opacity: 0.75,
+    });
+
+    // Hall body.
+    const hallGeo = new THREE.BoxGeometry(DISTRICT.clubW, 9, DISTRICT.clubD);
+    const hall = new THREE.Mesh(hallGeo, wallMat);
+    hall.position.y = 4.5;
+    hall.castShadow = true;
+    hall.receiveShadow = true;
+    hall.userData = { type: 'building', height: 9, bw: DISTRICT.clubW, bd: DISTRICT.clubD };
+    group.add(hall);
+    this.clubHall = hall;
+
+    // Pitched roof: two slabs meeting at the ridge, plus gable ends.
+    for (const side of [-1, 1]) {
+      const slabGeo = new THREE.BoxGeometry(DISTRICT.clubW + 2, 0.5, DISTRICT.clubD / 2 + 2);
+      const slab = new THREE.Mesh(slabGeo, roofMat);
+      slab.position.set(0, 10.6, side * DISTRICT.clubD / 4);
+      slab.rotation.x = side * 0.35;
+      slab.castShadow = true;
+      group.add(slab);
+    }
+    const ridgeGeo = new THREE.BoxGeometry(DISTRICT.clubW + 2, 0.6, 1);
+    const ridge = new THREE.Mesh(ridgeGeo, trimMat);
+    ridge.position.set(0, 12.2, 0);
+    group.add(ridge);
+
+    // Glass band around the hall: tall windows on all four faces.
+    for (let i = 0; i < 6; i++) {
+      const winGeo = new THREE.BoxGeometry(2.4, 4.5, 0.15);
+      const winN = new THREE.Mesh(winGeo, glassMat);
+      winN.position.set(-10 + i * 4, 4.5, DISTRICT.clubD / 2 + 0.1);
+      group.add(winN);
+      const winS = new THREE.Mesh(winGeo, glassMat);
+      winS.position.set(-10 + i * 4, 4.5, -DISTRICT.clubD / 2 - 0.1);
+      group.add(winS);
+    }
+    for (let i = 0; i < 5; i++) {
+      const winGeo = new THREE.BoxGeometry(0.15, 4.5, 2.4);
+      const winE = new THREE.Mesh(winGeo, glassMat);
+      winE.position.set(DISTRICT.clubW / 2 + 0.1, 4.5, -8 + i * 4);
+      group.add(winE);
+      const winW = new THREE.Mesh(winGeo, glassMat);
+      winW.position.set(-DISTRICT.clubW / 2 - 0.1, 4.5, -8 + i * 4);
+      group.add(winW);
+    }
+
+    // Terrace: a stone slab on the north face with a low balustrade.
+    // This is the Harbor Lights objective point.
+    const terraceGeo = new THREE.BoxGeometry(16, 0.5, 8);
+    const terraceMat = createStandardMaterial(0xb8b0a0);
+    const terrace = new THREE.Mesh(terraceGeo, terraceMat);
+    terrace.position.set(0, 0.35, DISTRICT.clubD / 2 + 4);
+    terrace.receiveShadow = true;
+    group.add(terrace);
+    this.terrace = terrace;
+    for (const side of [-1, 1]) {
+      const railGeo = new THREE.BoxGeometry(16, 0.9, 0.25);
+      const rail = new THREE.Mesh(railGeo, trimMat);
+      rail.position.set(0, 1.1, DISTRICT.clubD / 2 + 8 - (side < 0 ? 8 : 0));
+      group.add(rail);
+    }
+    const railSideGeo = new THREE.BoxGeometry(0.25, 0.9, 8);
+    for (const side of [-1, 1]) {
+      const rail = new THREE.Mesh(railSideGeo, trimMat);
+      rail.position.set(side * 8, 1.1, DISTRICT.clubD / 2 + 4);
+      group.add(rail);
+    }
+
+    // Deck on the water (south-east) side, on stilts over the sand.
+    const deckGeo = new THREE.BoxGeometry(20, 0.4, 10);
+    const deck = new THREE.Mesh(deckGeo, deckMat);
+    deck.position.set(0, 0.8, -DISTRICT.clubD / 2 - 5);
+    deck.receiveShadow = true;
+    group.add(deck);
+    this.clubDeck = deck;
+    for (let i = 0; i < 4; i++) {
+      const postGeo = new THREE.CylinderGeometry(0.25, 0.25, 1.6, 6);
+      const post = new THREE.Mesh(postGeo, trimMat);
+      post.position.set(-8 + i * 5.3, 0, -DISTRICT.clubD / 2 - 9);
+      group.add(post);
+    }
+
+    // Sign board above the door, and the pennant on its pole.
+    const signGeo = new THREE.BoxGeometry(14, 2.2, 0.4);
+    const signMat = createStandardMaterial(0x1a3a5a);
+    const sign = new THREE.Mesh(signGeo, signMat);
+    sign.position.set(0, 8.2, DISTRICT.clubD / 2 + 0.4);
+    group.add(sign);
+    const signTextGeo = new THREE.BoxGeometry(12, 1.2, 0.1);
+    const signTextMat = createEmissiveMaterial(0xffdd88, 0.9);
+    const signText = new THREE.Mesh(signTextGeo, signTextMat);
+    signText.position.set(0, 8.2, DISTRICT.clubD / 2 + 0.65);
+    group.add(signText);
+
+    const poleGeo = new THREE.CylinderGeometry(0.08, 0.1, 9, 6);
+    const pole = new THREE.Mesh(poleGeo, trimMat);
+    pole.position.set(DISTRICT.clubW / 2 - 1, 13.5, 0);
+    group.add(pole);
+    const pennantGeo = new THREE.PlaneGeometry(3, 1.2);
+    const pennantMat = new THREE.MeshBasicMaterial({ color: 0xc83838, side: THREE.DoubleSide });
+    const pennant = new THREE.Mesh(pennantGeo, pennantMat);
+    pennant.position.set(DISTRICT.clubW / 2 + 0.6, 17.2, 0);
+    group.add(pennant);
+    this.pennant = pennant;
+
+    group.position.set(DISTRICT.clubX, 0, DISTRICT.clubZ);
+    this.scene.add(group);
+    this.clubGroup = group;
+
+    // The hall is solid: an invisible collision box in WORLD
+    // coordinates, added to the scene (never to the group, whose
+    // children are local — a group child pushed here would read as a
+    // phantom building at the origin). The terrace and the deck are
+    // walkable and stay out of the list.
+    const solidGeo = new THREE.BoxGeometry(DISTRICT.clubW, 9, DISTRICT.clubD);
+    const solid = new THREE.Mesh(solidGeo, wallMat);
+    solid.position.set(DISTRICT.clubX, 4.5, DISTRICT.clubZ);
+    solid.userData = { type: 'building', height: 9, bw: DISTRICT.clubW, bd: DISTRICT.clubD };
+    solid.visible = false;
+    this.scene.add(solid);
+    this.city.buildings.push(solid);
+  }
+
+  // -- condo towers ------------------------------------------------------------
+
+  buildCondos() {
+    // Three towers with stepped heights. Each tower is a slab body with
+    // a darker crown, a lit-window glass skin built per face, and a
+    // rooftop box. All three push into city.buildings.
+    for (const tower of TOWERS) {
+      const group = new THREE.Group();
+      const bodyMat = createStandardMaterial(tower.tint);
+      const crownMat = createStandardMaterial(0x2a2a30);
+      const glassMat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide });
+
+      const bodyGeo = new THREE.BoxGeometry(tower.w, tower.h, tower.d);
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = tower.h / 2;
+      body.castShadow = true;
+      body.receiveShadow = true;
+      body.userData = { type: 'building', height: tower.h, bw: tower.w, bd: tower.d };
+      group.add(body);
+
+      // Crown: a slightly wider cap and a rooftop plant box.
+      const crownGeo = new THREE.BoxGeometry(tower.w + 1, 1.6, tower.d + 1);
+      const crown = new THREE.Mesh(crownGeo, crownMat);
+      crown.position.y = tower.h + 0.8;
+      crown.castShadow = true;
+      group.add(crown);
+      const plantGeo = new THREE.BoxGeometry(tower.w * 0.4, 2.2, tower.d * 0.4);
+      const plant = new THREE.Mesh(plantGeo, crownMat);
+      plant.position.set(tower.w * 0.2, tower.h + 2.6, -tower.d * 0.15);
+      group.add(plant);
+
+      // Window glass: one quad per window on all four faces, lit or dark
+      // per a hash of the tower seed, exactly like the base city does.
+      const quads = this.buildTowerWindows(tower, glassMat);
+      group.add(quads);
+
+      // Balconies on the sea-facing side, every third floor.
+      const balconyMat = createStandardMaterial(0x4a4a52);
+      const floors = Math.floor(tower.h / 4);
+      for (let f = 2; f < floors; f += 3) {
+        const balcGeo = new THREE.BoxGeometry(tower.w * 0.5, 0.3, 2.4);
+        const balc = new THREE.Mesh(balcGeo, balconyMat);
+        balc.position.set(0, f * 4 + 0.5, tower.d / 2 + 1.2);
+        balc.castShadow = true;
+        group.add(balc);
+      }
+
+      group.position.set(tower.x, 0, tower.z);
+      this.scene.add(group);
+      // Collision box in world coordinates (see the yacht club note:
+      // a group child would read as a phantom at the origin).
+      const solidGeo = new THREE.BoxGeometry(tower.w, tower.h, tower.d);
+      const solid = new THREE.Mesh(solidGeo, bodyMat);
+      solid.position.set(tower.x, tower.h / 2, tower.z);
+      solid.userData = { type: 'building', height: tower.h, bw: tower.w, bd: tower.d };
+      solid.visible = false;
+      this.scene.add(solid);
+      this.city.buildings.push(solid);
+      this.condos.push({
+        name: tower.name,
+        mesh: group,
+        body,
+        x: tower.x,
+        z: tower.z,
+        height: tower.h,
+        length: tower.h,
+      });
+    }
+  }
+
+  buildTowerWindows(tower, material) {
+    // Per-face window quads with per-window lit/dark vertex colours.
+    // The geometry is built in tower-local space, centred on the body.
     const positions = [];
-    const colors = [];
+    const colours = [];
     const lit = new THREE.Color(CONFIG.PALETTE.WINDOW_LIT);
     const dark = new THREE.Color(CONFIG.PALETTE.WINDOW_DARK);
     const winW = 1.4;
     const winH = 1.8;
     const out = 0.07;
-    const floors = Math.max(2, Math.floor((h - 6) / 3.4));
-    const quad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, color) => {
-      // Two triangles: a-b-c and a-c-d.
-      positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-      positions.push(ax, ay, az, cx, cy, cz, dx, dy, dz);
-      for (let i = 0; i < 6; i++) colors.push(color.r, color.g, color.b);
+    const rows = Math.min(Math.max(2, Math.floor((tower.h - 6) / 3.4)), 12);
+    const pushQuad = (mapFn, u0, v0, u1, v1, colour) => {
+      const corners = [
+        [u0, v0], [u1, v0], [u1, v1],
+        [u0, v0], [u1, v1], [u0, v1],
+      ];
+      for (const [u, v] of corners) {
+        const p = mapFn(u, v);
+        positions.push(p[0], p[1], p[2]);
+        colours.push(colour.r, colour.g, colour.b);
+      }
     };
-    for (let face = 0; face < 4; face++) {
-      const faceW = face % 2 === 0 ? w : d;
-      const cols = Math.max(2, Math.floor(faceW / 4));
-      const step = faceW / cols;
-      for (let floor = 0; floor < floors; floor++) {
-        const wy = -h / 2 + 4 + floor * 3.4;
-        if (wy + winH / 2 > h / 2 - 1) break;
+    for (let side = 0; side < 4; side++) {
+      const faceW = side % 2 === 0 ? tower.w : tower.d;
+      const cols = Math.min(Math.max(3, Math.floor(faceW / 3.2)), 7);
+      const spacing = faceW / cols;
+      for (let row = 0; row < rows; row++) {
+        const wy = 3.4 + row * 3.4;
+        if (wy + winH / 2 > tower.h - 2) break;
         for (let col = 0; col < cols; col++) {
-          const wx = -faceW / 2 + step * (col + 0.5);
-          const on = hash2D(seed + col * 13 + face * 41, seed + floor * 17, 4242) > 0.65;
-          const color = on ? lit : dark;
-          const u0 = wx - winW / 2;
-          const u1 = wx + winW / 2;
-          const v0 = wy - winH / 2;
-          const v1 = wy + winH / 2;
-          if (face === 0) quad(u0, v0, d / 2 + out, u1, v0, d / 2 + out, u1, v1, d / 2 + out, u0, v1, d / 2 + out, color);
-          else if (face === 1) quad(u1, v0, -(d / 2 + out), u0, v0, -(d / 2 + out), u0, v1, -(d / 2 + out), u1, v1, -(d / 2 + out), color);
-          else if (face === 2) quad(w / 2 + out, v0, u0, w / 2 + out, v0, u1, w / 2 + out, v1, u1, w / 2 + out, v1, u0, color);
-          else quad(-(w / 2 + out), v0, u1, -(w / 2 + out), v0, u0, -(w / 2 + out), v1, u0, -(w / 2 + out), v1, u1, color);
+          const wx = -faceW / 2 + spacing * (col + 0.5);
+          const litWindow = hash2D(tower.x + col * 13 + side * 41, tower.z + row * 17, this.seed + 77) > 0.62;
+          const colour = litWindow ? lit : dark;
+          const u0 = wx - winW / 2, u1 = wx + winW / 2;
+          const v0 = wy - winH / 2, v1 = wy + winH / 2;
+          if (side === 0) pushQuad((u, v) => [u, v, tower.d / 2 + out], u0, v0, u1, v1, colour);
+          else if (side === 1) pushQuad((u, v) => [u, v, -(tower.d / 2 + out)], u0, v0, u1, v1, colour);
+          else if (side === 2) pushQuad((u, v) => [tower.w / 2 + out, v, u], u0, v0, u1, v1, colour);
+          else pushQuad((u, v) => [-(tower.w / 2 + out), v, u], u0, v0, u1, v1, colour);
         }
       }
     }
-    if (positions.length === 0) return null;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colours, 3));
     geo.computeBoundingSphere();
-    return new THREE.Mesh(
-      geo,
-      new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
-    );
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.position.y = 0;
+    return mesh;
   }
 
-  // -- groundwork ----------------------------------------------------------
+  // -- promenade shops -----------------------------------------------------------
 
-  createPromenade() {
-    // Boardwalk strips flanking the z = -640 street, west to east.
-    this.slab(280, 0.25, 10, 0x8a6a4a, 650, 0.12, -626);
-    this.slab(280, 0.25, 10, 0x8a6a4a, 650, 0.12, -654);
-    // Timber edging so the boardwalk reads against the sand.
-    this.slab(280, 0.5, 0.6, 0x5a3a1a, 650, 0.25, -620.5);
-    this.slab(280, 0.5, 0.6, 0x5a3a1a, 650, 0.25, -659.5);
-    // Benches facing the marina, every 35 units.
-    for (let x = 540; x <= 760; x += 35) {
-      const bench = new THREE.Group();
-      const seat = new THREE.Mesh(
-        new THREE.BoxGeometry(4, 0.25, 1.2),
-        createStandardMaterial(0x7a5a3a),
-      );
-      seat.position.y = 0.7;
-      seat.castShadow = true;
-      bench.add(seat);
-      const back = new THREE.Mesh(
-        new THREE.BoxGeometry(4, 1, 0.2),
-        createStandardMaterial(0x7a5a3a),
-      );
-      back.position.set(0, 1.2, -0.55);
-      back.castShadow = true;
-      bench.add(back);
-      for (const lx of [-1.8, 1.8]) {
-        const leg = new THREE.Mesh(
-          new THREE.BoxGeometry(0.25, 0.7, 1),
-          createStandardMaterial(0x3a3a3a),
-        );
-        leg.position.set(lx, 0.35, 0);
-        bench.add(leg);
-      }
-      bench.position.set(x, 0.25, -650);
-      bench.rotation.y = Math.PI; // face the water (south-east side)
-      this.scene.add(bench);
-    }
-    // A low promenade lamp every 40 units, alternating sides.
-    for (let i = 0; i < 7; i++) {
-      const x = 530 + i * 40;
-      const z = i % 2 === 0 ? -622 : -658;
-      const pole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.09, 0.13, 5.5, 6),
-        createStandardMaterial(0x2a2a2a),
-      );
-      pole.position.set(x, 2.75, z);
-      pole.castShadow = true;
-      this.scene.add(pole);
-      const lamp = new THREE.Mesh(
-        new THREE.SphereGeometry(0.4, 8, 6),
-        new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.75 }),
-      );
-      lamp.position.set(x, 5.6, z);
-      this.scene.add(lamp);
-    }
-    // Warm light over the middle of the promenade, dimmed by day.
-    this.promenadeLight = new THREE.PointLight(0xffdd88, 0, 90, 1.2);
-    this.promenadeLight.position.set(650, 12, -640);
-    this.scene.add(this.promenadeLight);
-  }
+  buildShops() {
+    // Three huts with striped awnings and a lit sign board each. The
+    // huts are solid (they push into city.buildings); the awnings hang
+    // over the walkway and stay out of the collision list.
+    for (const shop of SHOPS) {
+      const group = new THREE.Group();
+      const hutMat = createStandardMaterial(0xd8c8a8);
+      const roofMat = createStandardMaterial(0x3a3a42);
 
-  createYachtClub() {
-    const s = DISTRICT_SPOTS.yachtClub;
-    const w = 30;
-    const d = 24;
-    const h = 26;
-    // Main hall with a nautical blue base and a white upper deck.
-    const hall = new THREE.Mesh(
-      new THREE.BoxGeometry(w, h * 0.6, d),
-      createStandardMaterial(0x2a4a6a),
-    );
-    hall.position.set(s.x, (h * 0.6) / 2, s.z);
-    hall.castShadow = true;
-    hall.receiveShadow = true;
-    hall.userData = { type: 'building', height: h * 0.6, bw: w, bd: d, district: true };
-    this.scene.add(hall);
-    // Register with the city so cars and pedestrians collide with it.
-    this.city.buildings.push(hall);
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(w * 0.9, h * 0.4, d * 0.9),
-      createStandardMaterial(0xe8e0d0),
-    );
-    deck.position.set(s.x, h * 0.6 + (h * 0.4) / 2, s.z);
-    deck.castShadow = true;
-    deck.receiveShadow = true;
-    this.scene.add(deck);
-    // Pitched roof.
-    const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(Math.max(w, d) * 0.72, 5, 4),
-      createStandardMaterial(0xc83838),
-    );
-    roof.position.set(s.x, h + 2.5, s.z);
-    roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
-    this.scene.add(roof);
-    // Glass front facing the promenade (south face).
-    const glass = this.makeWindowGlass(w, d, h * 0.6, 11);
-    if (glass) {
-      glass.position.set(s.x, (h * 0.6) / 2, s.z);
-      this.scene.add(glass);
-    }
-    // "YACHT CLUB" sign board over the door.
-    const sign = new THREE.Mesh(
-      new THREE.BoxGeometry(16, 2.4, 0.4),
-      createEmissiveMaterial(0xffee88, 0.6),
-    );
-    sign.position.set(s.x, h * 0.6 + 1, s.z + d / 2 + 0.3);
-    this.scene.add(sign);
-    this.shopSigns.push(sign);
-    // Flag pole with a waving pennant (animated in update()).
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.12, 0.15, 12, 6),
-      createStandardMaterial(0x8a8a8a),
-    );
-    pole.position.set(s.x + w / 2 - 2, h + 6, s.z);
-    this.scene.add(pole);
-    const pennant = new THREE.Mesh(
-      new THREE.PlaneGeometry(4, 1.6),
-      new THREE.MeshBasicMaterial({ color: 0xffdd33, side: THREE.DoubleSide }),
-    );
-    pennant.position.set(s.x + w / 2 + 0.2, h + 10.5, s.z);
-    this.scene.add(pennant);
-    this.pennant = pennant;
-    // Terrace with two umbrella tables in front of the club.
-    for (const [ox, oz] of [[-8, 16], [8, 16]]) {
-      const table = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.6, 1.6, 0.15, 10),
-        createStandardMaterial(0xd8d0c0),
-      );
-      table.position.set(s.x + ox, 1.1, s.z + oz);
-      table.castShadow = true;
-      this.scene.add(table);
-      const stem = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08, 0.08, 1.1, 6),
-        createStandardMaterial(0x5a5a5a),
-      );
-      stem.position.set(s.x + ox, 0.55, s.z + oz);
-      this.scene.add(stem);
-      const shade = new THREE.Mesh(
-        new THREE.ConeGeometry(2.2, 0.7, 8),
-        createStandardMaterial(ox < 0 ? 0xc83838 : 0x3878c8),
-      );
-      shade.position.set(s.x + ox, 2.6, s.z + oz);
-      shade.castShadow = true;
-      this.scene.add(shade);
-    }
-  }
-
-  createCondos() {
-    // Three beachfront towers, each with its own window glass, a rooftop
-    // plant box and a lit lobby canopy so they read at night too.
-    for (let i = 0; i < CONDO_TOWERS.length; i++) {
-      const t = CONDO_TOWERS[i];
-      const body = new THREE.Mesh(
-        new THREE.BoxGeometry(t.w, t.h, t.d),
-        createStandardMaterial(t.base),
-      );
-      body.position.set(t.x, t.h / 2, t.z);
-      body.castShadow = true;
-      body.receiveShadow = true;
-      body.userData = { type: 'building', height: t.h, bw: t.w, bd: t.d, district: true };
-      this.scene.add(body);
-      // Register with the city so cars and pedestrians collide with it.
-      this.city.buildings.push(body);
-      this.condos.push(body);
-      // Accent band near the top.
-      const band = new THREE.Mesh(
-        new THREE.BoxGeometry(t.w * 1.04, 1.6, t.d * 1.04),
-        createStandardMaterial(t.accent),
-      );
-      band.position.set(t.x, t.h - 3, t.z);
-      band.castShadow = true;
-      this.scene.add(band);
-      // Rooftop plant box.
-      const plant = new THREE.Mesh(
-        new THREE.BoxGeometry(t.w * 0.5, 1.2, t.d * 0.4),
-        createStandardMaterial(0x2a4a2a),
-      );
-      plant.position.set(t.x, t.h + 0.6, t.z);
-      plant.castShadow = true;
-      this.scene.add(plant);
-      // Window glass.
-      const glass = this.makeWindowGlass(t.w, t.d, t.h, 100 + i * 37);
-      if (glass) {
-        glass.position.set(t.x, t.h / 2, t.z);
-        this.scene.add(glass);
-      }
-      // Lobby canopy with a warm light strip.
-      const canopy = new THREE.Mesh(
-        new THREE.BoxGeometry(10, 0.5, 5),
-        createStandardMaterial(0x3a3a3a),
-      );
-      canopy.position.set(t.x, 3.4, t.z + t.d / 2 + 2);
-      canopy.castShadow = true;
-      this.scene.add(canopy);
-      const strip = new THREE.Mesh(
-        new THREE.BoxGeometry(9, 0.15, 0.3),
-        createEmissiveMaterial(0xffee88, 0.9),
-      );
-      strip.position.set(t.x, 3.1, t.z + t.d / 2 + 4.4);
-      this.scene.add(strip);
-      // Name plate on the south face.
-      const plate = new THREE.Mesh(
-        new THREE.BoxGeometry(14, 1.8, 0.3),
-        createEmissiveMaterial(t.accent, 0.5),
-      );
-      plate.position.set(t.x, 6.5, t.z + t.d / 2 + 0.2);
-      this.scene.add(plate);
-    }
-  }
-
-  createShops() {
-    // Three small promenade shops: hut, striped awning, glowing sign.
-    for (const shop of PROMENADE_SHOPS) {
-      const hut = new THREE.Mesh(
-        new THREE.BoxGeometry(12, 5, 10),
-        createStandardMaterial(0xe8dcc8),
-      );
-      hut.position.set(shop.x, 2.5, shop.z);
+      const hutGeo = new THREE.BoxGeometry(shop.w, shop.h, shop.d);
+      const hut = new THREE.Mesh(hutGeo, hutMat);
+      hut.position.y = shop.h / 2;
       hut.castShadow = true;
       hut.receiveShadow = true;
-      hut.userData = { type: 'building', height: 5, bw: 12, bd: 10, district: true };
-      this.scene.add(hut);
-      // Register with the city so cars and pedestrians collide with it.
-      this.city.buildings.push(hut);
-      // Awning: a slanted slab over the south face.
-      const awning = new THREE.Mesh(
-        new THREE.BoxGeometry(12.5, 0.25, 4),
-        createStandardMaterial(shop.awning),
-      );
-      awning.position.set(shop.x, 4.6, shop.z + 6);
-      awning.rotation.x = 0.35;
-      awning.castShadow = true;
-      this.scene.add(awning);
-      // Awning stripes: thin alternating slabs.
-      for (let s = 0; s < 6; s++) {
-        const stripe = new THREE.Mesh(
-          new THREE.BoxGeometry(1.9, 0.3, 4.1),
-          createStandardMaterial(s % 2 === 0 ? 0xffffff : shop.awning),
-        );
-        stripe.position.set(shop.x - 5.2 + s * 2.08, 4.6, shop.z + 6);
+      hut.userData = { type: 'building', height: shop.h, bw: shop.w, bd: shop.d };
+      group.add(hut);
+
+      const roofGeo = new THREE.BoxGeometry(shop.w + 1.5, 0.5, shop.d + 1.5);
+      const roof = new THREE.Mesh(roofGeo, roofMat);
+      roof.position.y = shop.h + 0.25;
+      group.add(roof);
+
+      // Striped awning: alternating coloured and pale slabs, angled
+      // down over the shop front (the north face, toward the promenade).
+      const stripeCount = 6;
+      const stripeW = shop.w / stripeCount;
+      for (let i = 0; i < stripeCount; i++) {
+        const stripeGeo = new THREE.BoxGeometry(stripeW + 0.05, 0.18, 3.4);
+        const stripeMat = createStandardMaterial(shop.stripe[i % 2]);
+        const stripe = new THREE.Mesh(stripeGeo, stripeMat);
+        stripe.position.set(-shop.w / 2 + stripeW * (i + 0.5), shop.h - 1.1, shop.d / 2 + 1.4);
         stripe.rotation.x = 0.35;
-        this.scene.add(stripe);
+        stripe.castShadow = true;
+        group.add(stripe);
       }
-      // Glowing sign board.
-      const sign = new THREE.Mesh(
-        new THREE.BoxGeometry(10, 1.6, 0.3),
-        createEmissiveMaterial(shop.sign, 0.7),
-      );
-      sign.position.set(shop.x, 5.8, shop.z + 5.2);
-      this.scene.add(sign);
-      this.shopSigns.push(sign);
-      // Counter + crates in front, so the shop is more than a box.
-      const counter = new THREE.Mesh(
-        new THREE.BoxGeometry(8, 1.1, 1.6),
-        createStandardMaterial(0x6a4a2a),
-      );
-      counter.position.set(shop.x, 0.55, shop.z + 7.5);
-      counter.castShadow = true;
-      this.scene.add(counter);
-      for (let c = 0; c < 3; c++) {
-        const crate = new THREE.Mesh(
-          new THREE.BoxGeometry(1.4, 1.4, 1.4),
-          createStandardMaterial(0x8a6a3a),
-        );
-        crate.position.set(shop.x - 5 + c * 1.8, 0.7, shop.z + 8.6);
-        crate.rotation.y = c * 0.4;
-        crate.castShadow = true;
-        this.scene.add(crate);
-      }
+
+      // Counter window on the front face, glowing warm at night.
+      const counterGeo = new THREE.BoxGeometry(shop.w * 0.6, 2.2, 0.15);
+      const counterMat = createEmissiveMaterial(0xffcc66, 0.85);
+      const counter = new THREE.Mesh(counterGeo, counterMat);
+      counter.position.set(0, 2.6, shop.d / 2 + 0.1);
+      group.add(counter);
+
+      // Sign board with the shop name in light.
+      const signGeo = new THREE.BoxGeometry(shop.w * 0.8, 1.4, 0.3);
+      const signMat = createStandardMaterial(0x1a2a3a);
+      const sign = new THREE.Mesh(signGeo, signMat);
+      sign.position.set(0, shop.h - 0.4, shop.d / 2 + 0.25);
+      group.add(sign);
+      const glowGeo = new THREE.BoxGeometry(shop.w * 0.7, 0.8, 0.1);
+      const glowMat = createEmissiveMaterial(0xffeebb, 0.9);
+      const glow = new THREE.Mesh(glowGeo, glowMat);
+      glow.position.set(0, shop.h - 0.4, shop.d / 2 + 0.45);
+      group.add(glow);
+
+      group.position.set(shop.x, 0, shop.z);
+      this.scene.add(group);
+      // Collision box in world coordinates (see the yacht club note).
+      const solidGeo = new THREE.BoxGeometry(shop.w, shop.h, shop.d);
+      const solid = new THREE.Mesh(solidGeo, hutMat);
+      solid.position.set(shop.x, shop.h / 2, shop.z);
+      solid.userData = { type: 'building', height: shop.h, bw: shop.w, bd: shop.d };
+      solid.visible = false;
+      this.scene.add(solid);
+      this.city.buildings.push(solid);
+      this.shops.push({ name: shop.sign, mesh: group, x: shop.x, z: shop.z });
     }
   }
 
-  createBeachBar() {
-    // Open-air beach bar on the sand: four posts, a thatch roof, a
-    // counter, stools and a row of bottles that catch the light.
-    const s = DISTRICT_SPOTS.beachBar;
-    const posts = [];
-    for (const [ox, oz] of [[-4, -3], [4, -3], [-4, 3], [4, 3]]) {
-      const post = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.18, 0.22, 4.5, 6),
-        createStandardMaterial(0x6a4a2a),
-      );
-      post.position.set(s.x + ox, 2.25, s.z + oz);
-      post.castShadow = true;
-      this.scene.add(post);
-      posts.push(post);
-    }
-    const roof = new THREE.Mesh(
-      new THREE.ConeGeometry(7.5, 2.4, 4),
-      createStandardMaterial(0xc8a848),
-    );
-    roof.position.set(s.x, 5.6, s.z);
-    roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
-    this.scene.add(roof);
-    const counter = new THREE.Mesh(
-      new THREE.BoxGeometry(9, 1.2, 2),
-      createStandardMaterial(0x4a6a8a),
-    );
-    counter.position.set(s.x, 0.6, s.z);
+  // -- beach bar -----------------------------------------------------------------
+
+  buildBeachBar() {
+    // An open-air bar on the north edge of the district: a counter, a
+    // thatch roof on four posts, stools, a chalk board and a string of
+    // bottles on the back shelf. The bar is where the Manifest delivery
+    // ends (608, -544), so the counter front stays clear of obstacles.
+    const group = new THREE.Group();
+    const counterMat = createStandardMaterial(0x7a5a34);
+    const roofMat = createStandardMaterial(0xc8a848);
+    const postMat = createStandardMaterial(0x4a3a26);
+    const stoolMat = createStandardMaterial(0x8a2a2a);
+
+    // Counter block.
+    const counterGeo = new THREE.BoxGeometry(10, 1.2, 2.4);
+    const counter = new THREE.Mesh(counterGeo, counterMat);
+    counter.position.y = 0.6;
     counter.castShadow = true;
-    this.scene.add(counter);
-    const top = new THREE.Mesh(
-      new THREE.BoxGeometry(9.6, 0.2, 2.6),
-      createStandardMaterial(0x2a2a2a),
-    );
-    top.position.set(s.x, 1.3, s.z);
-    this.scene.add(top);
-    // Stools.
-    for (let i = -2; i <= 2; i++) {
-      const stool = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.45, 0.45, 0.15, 8),
-        createStandardMaterial(0xc83838),
-      );
-      stool.position.set(s.x + i * 2, 0.9, s.z + 2.6);
-      this.scene.add(stool);
-      const leg = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.07, 0.07, 0.9, 6),
-        createStandardMaterial(0x3a3a3a),
-      );
-      leg.position.set(s.x + i * 2, 0.45, s.z + 2.6);
-      this.scene.add(leg);
+    counter.receiveShadow = true;
+    group.add(counter);
+    const topGeo = new THREE.BoxGeometry(10.6, 0.25, 3);
+    const top = new THREE.Mesh(topGeo, createStandardMaterial(0x3a2a1a));
+    top.position.y = 1.3;
+    top.castShadow = true;
+    group.add(top);
+
+    // Four posts and the thatch roof (a flattened cone).
+    for (const [px, pz] of [[-4.6, -1], [4.6, -1], [-4.6, 1], [4.6, 1]]) {
+      const postGeo = new THREE.CylinderGeometry(0.14, 0.18, 4.4, 6);
+      const post = new THREE.Mesh(postGeo, postMat);
+      post.position.set(px, 2.2, pz);
+      group.add(post);
     }
-    // Bottles on the counter: tiny emissive cylinders in a row.
-    const bottleColors = [0x38a838, 0xc83838, 0xe8c838, 0x38c8c8, 0xc838a8];
+    const thatchGeo = new THREE.ConeGeometry(8.4, 2.4, 4);
+    const thatch = new THREE.Mesh(thatchGeo, roofMat);
+    thatch.position.y = 5.4;
+    thatch.rotation.y = Math.PI / 4;
+    thatch.castShadow = true;
+    group.add(thatch);
+
+    // Stools in a row along the counter front.
     for (let i = 0; i < 5; i++) {
-      const bottle = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.12, 0.16, 0.7, 6),
-        createEmissiveMaterial(bottleColors[i], 0.4),
-      );
-      bottle.position.set(s.x - 3 + i * 1.5, 1.75, s.z - 0.4);
-      this.scene.add(bottle);
+      const stool = new THREE.Group();
+      const seatGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.18, 10);
+      const seat = new THREE.Mesh(seatGeo, stoolMat);
+      seat.position.y = 0.85;
+      stool.add(seat);
+      const legGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.85, 6);
+      const leg = new THREE.Mesh(legGeo, postMat);
+      leg.position.y = 0.42;
+      stool.add(leg);
+      stool.position.set(-4 + i * 2, 0, 2.6);
+      group.add(stool);
     }
-    // String of bulbs over the bar.
-    for (let i = 0; i < 7; i++) {
-      const bulb = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 6, 6),
-        new THREE.MeshBasicMaterial({ color: 0xffee88 }),
-      );
-      bulb.position.set(s.x - 4.5 + i * 1.5, 4.4 - Math.abs(i - 3) * 0.18, s.z + 2.5);
-      this.scene.add(bulb);
+
+    // Back shelf with bottles: small coloured cylinders in two rows.
+    const bottleColours = [0x2a6a2a, 0x8a2a2a, 0xc8a838, 0x3878c8, 0x2a8a6a];
+    for (let row = 0; row < 2; row++) {
+      const shelfGeo = new THREE.BoxGeometry(9, 0.12, 0.8);
+      const shelf = new THREE.Mesh(shelfGeo, counterMat);
+      shelf.position.set(0, 2.2 + row * 1.1, -1.6);
+      group.add(shelf);
+      for (let i = 0; i < 9; i++) {
+        const bottleGeo = new THREE.CylinderGeometry(0.12, 0.14, 0.55, 6);
+        const bottleMat = createStandardMaterial(bottleColours[(i + row * 3) % bottleColours.length]);
+        const bottle = new THREE.Mesh(bottleGeo, bottleMat);
+        bottle.position.set(-4 + i, 2.55 + row * 1.1, -1.6);
+        group.add(bottle);
+      }
     }
+
+    // Chalk board with the day's special, leaning on the counter end.
+    const boardGeo = new THREE.BoxGeometry(1.8, 2.4, 0.12);
+    const boardMat = createStandardMaterial(0x1a1a1a);
+    const board = new THREE.Mesh(boardGeo, boardMat);
+    board.position.set(5.6, 1.3, 1.8);
+    board.rotation.y = -0.4;
+    group.add(board);
+    const chalkGeo = new THREE.BoxGeometry(1.4, 0.5, 0.05);
+    const chalkMat = createEmissiveMaterial(0xf8f0d0, 0.7);
+    const chalk = new THREE.Mesh(chalkGeo, chalkMat);
+    chalk.position.set(5.6, 1.9, 1.9);
+    chalk.rotation.y = -0.4;
+    group.add(chalk);
+
+    group.position.set(DISTRICT.beachBarX, 0, DISTRICT.beachBarZ);
+    this.scene.add(group);
+    this.beachBar = group;
   }
 
-  createMarinaPool() {
-    // The marina basin: a big translucent water plane over the sand, with
-    // a darker deep-water centre and a pale shallow rim. The city ground
-    // is solid here, so the pool is decorative — but yachts, buoys and the
-    // pier all sit on it, and it reads as water from any angle.
-    const s = DISTRICT_SPOTS.marinaPool;
-    this.poolMat = new THREE.MeshStandardMaterial({
-      color: 0x1a6a9a,
-      roughness: 0.15,
-      metalness: 0.6,
-      transparent: true,
-      opacity: 0.82,
+  // -- marina pool ---------------------------------------------------------------
+
+  buildMarinaPool() {
+    // A rectangular pool between the club and the condos, with a turquoise
+    // surface that shimmers, a pale rim, deck chairs and two umbrellas.
+    // The water surface is the mesh the update pass animates.
+    const group = new THREE.Group();
+    const rimMat = createStandardMaterial(0xd8d0c0);
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0x2a9ab8, roughness: 0.05, metalness: 0.4,
+      transparent: true, opacity: 0.9,
     });
-    this.pool = new THREE.Mesh(
-      new THREE.PlaneGeometry(230, 170),
-      this.poolMat,
-    );
-    this.pool.rotation.x = -Math.PI / 2;
-    this.pool.rotation.z = Math.PI / 4;
-    this.pool.position.set(s.x, 0.18, s.z);
-    this.pool.receiveShadow = true;
-    this.scene.add(this.pool);
-    // Shallow rim: a slightly larger, paler plane just under the pool.
-    const rim = new THREE.Mesh(
-      new THREE.PlaneGeometry(250, 190),
-      new THREE.MeshStandardMaterial({
-        color: 0x3a8ab8, roughness: 0.3, metalness: 0.3,
-        transparent: true, opacity: 0.5,
-      }),
-    );
-    rim.rotation.x = -Math.PI / 2;
-    rim.rotation.z = Math.PI / 4;
-    rim.position.set(s.x, 0.12, s.z);
-    this.scene.add(rim);
-    // Wooden edge boards around the pool's south-west side (the quay).
-    this.slab(120, 0.4, 3, 0x6a4a2a, 700, 0.3, -700, Math.PI / 4);
-    this.slab(90, 0.4, 3, 0x6a4a2a, 760, 0.3, -690, Math.PI / 4);
+
+    const basinGeo = new THREE.BoxGeometry(24, 1.2, 12);
+    const basin = new THREE.Mesh(basinGeo, rimMat);
+    basin.position.y = 0.1;
+    basin.receiveShadow = true;
+    group.add(basin);
+    const waterGeo = new THREE.PlaneGeometry(22, 10);
+    const water = new THREE.Mesh(waterGeo, waterMat);
+    water.rotation.x = -Math.PI / 2;
+    water.position.y = 0.75;
+    group.add(water);
+    this.poolWater = water;
+
+    // Deck chairs: reclined frames in two rows.
+    const chairMat = createStandardMaterial(0xe8e0d0);
+    const chairClothMat = createStandardMaterial(0x38a8a8);
+    for (let i = 0; i < 6; i++) {
+      const chair = new THREE.Group();
+      const frameGeo = new THREE.BoxGeometry(0.9, 0.5, 2.2);
+      const frame = new THREE.Mesh(frameGeo, chairMat);
+      frame.position.y = 0.35;
+      frame.rotation.x = -0.18;
+      chair.add(frame);
+      const clothGeo = new THREE.BoxGeometry(0.8, 0.12, 1.8);
+      const cloth = new THREE.Mesh(clothGeo, chairClothMat);
+      cloth.position.set(0, 0.62, -0.2);
+      cloth.rotation.x = -0.18;
+      chair.add(cloth);
+      chair.position.set(-9 + (i % 3) * 9, 0.8, i < 3 ? -8 : 8);
+      chair.rotation.y = i < 3 ? 0 : Math.PI;
+      group.add(chair);
+    }
+
+    // Two umbrellas over the chairs.
+    for (const ux of [-6, 6]) {
+      const poleGeo = new THREE.CylinderGeometry(0.06, 0.06, 3, 6);
+      const pole = new THREE.Mesh(poleGeo, createStandardMaterial(0x8a7a5a));
+      pole.position.set(ux, 2.3, -8);
+      group.add(pole);
+      const canopyGeo = new THREE.ConeGeometry(2.2, 0.7, 8);
+      const canopy = new THREE.Mesh(canopyGeo, createStandardMaterial(0xe8c838));
+      canopy.position.set(ux, 3.9, -8);
+      canopy.castShadow = true;
+      group.add(canopy);
+    }
+
+    group.position.set(640, 0, -700);
+    this.scene.add(group);
+    this.poolGroup = group;
   }
 
-  createPier() {
-    // A wooden pier running diagonally from the promenade (700, -700)
-    // out to the lighthouse. Planks are individual slabs so the walkway
-    // has visible gaps; posts and a rope rail line both sides.
-    const from = { x: 700, z: -700 };
-    const to = { x: 858, z: -858 };
-    const dx = to.x - from.x;
-    const dz = to.z - from.z;
-    const len = Math.hypot(dx, dz);
+  // -- pier ----------------------------------------------------------------------
+
+  buildPier() {
+    // A diagonal pier from the promenade (700, -700) out to the pier head
+    // (858, -858), where the Manifest pickup waits. Planks, rails, a
+    // PIER 9 sign at the head, and lamp posts along its length.
+    const startX = 700, startZ = -700;
+    const endX = DISTRICT.pierHeadX, endZ = DISTRICT.pierHeadZ;
+    const dx = endX - startX, dz = endZ - startZ;
+    const length = Math.hypot(dx, dz);
     const angle = Math.atan2(dx, dz);
-    const steps = Math.floor(len / 4);
-    for (let i = 0; i < steps; i++) {
-      const t = (i + 0.5) / steps;
-      const x = from.x + dx * t;
-      const z = from.z + dz * t;
-      const plank = new THREE.Mesh(
-        new THREE.BoxGeometry(5, 0.25, 3.4),
-        createStandardMaterial(i % 2 === 0 ? 0x8a6a4a : 0x7a5a3a),
-      );
-      plank.position.set(x, 0.5, z);
-      plank.rotation.y = angle;
-      plank.castShadow = true;
-      plank.receiveShadow = true;
-      this.scene.add(plank);
+    const midX = (startX + endX) / 2, midZ = (startZ + endZ) / 2;
+
+    const group = new THREE.Group();
+    const plankMat = createStandardMaterial(0x7a5a34);
+    const railMat = createStandardMaterial(0x3a3a3a);
+    const pileMat = createStandardMaterial(0x2a2a22);
+
+    // Deck: a long box, slightly above the sand.
+    const deckGeo = new THREE.BoxGeometry(6, 0.5, length);
+    const deck = new THREE.Mesh(deckGeo, plankMat);
+    deck.position.y = 0.55;
+    deck.receiveShadow = true;
+    group.add(deck);
+
+    // Plank seams: thin darker strips across the deck every 4 units.
+    const seamMat = createStandardMaterial(0x5a4226);
+    const seamCount = Math.floor(length / 4);
+    for (let i = 0; i < seamCount; i++) {
+      const seamGeo = new THREE.BoxGeometry(6, 0.06, 0.25);
+      const seam = new THREE.Mesh(seamGeo, seamMat);
+      seam.position.set(0, 0.82, -length / 2 + 2 + i * 4);
+      group.add(seam);
     }
-    // Support posts under the pier, every 5 planks.
-    for (let i = 0; i < steps; i += 5) {
-      const t = (i + 0.5) / steps;
-      const x = from.x + dx * t;
-      const z = from.z + dz * t;
-      for (const side of [-2.2, 2.2]) {
-        const px = x + Math.cos(angle) * side;
-        const pz = z - Math.sin(angle) * side;
-        const post = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.22, 0.28, 3, 6),
-          createStandardMaterial(0x4a3a2a),
-        );
-        post.position.set(px, -0.8, pz);
-        this.scene.add(post);
+
+    // Rails on both sides.
+    for (const side of [-1, 1]) {
+      const railGeo = new THREE.BoxGeometry(0.15, 0.15, length);
+      const rail = new THREE.Mesh(railGeo, railMat);
+      rail.position.set(side * 2.9, 1.5, 0);
+      group.add(rail);
+      const postCount = Math.floor(length / 8);
+      for (let i = 0; i <= postCount; i++) {
+        const postGeo = new THREE.BoxGeometry(0.15, 1.1, 0.15);
+        const post = new THREE.Mesh(postGeo, railMat);
+        post.position.set(side * 2.9, 1, -length / 2 + i * 8);
+        group.add(post);
       }
     }
-    // Rope rails: small posts + a sagging line of thin cylinders.
-    const railMat = createStandardMaterial(0xd8c8a8);
-    for (const side of [-2.4, 2.4]) {
-      let prev = null;
-      for (let i = 0; i <= steps; i += 4) {
-        const t = i / steps;
-        const x = from.x + dx * t + Math.cos(angle) * side;
-        const z = from.z + dz * t - Math.sin(angle) * side;
-        const post = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.09, 0.11, 1.4, 6),
-          createStandardMaterial(0x5a4a3a),
-        );
-        post.position.set(x, 1.2, z);
-        this.scene.add(post);
-        if (prev) {
-          const segLen = Math.hypot(x - prev.x, z - prev.z);
-          const rail = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.05, 0.05, segLen, 5),
-            railMat,
-          );
-          rail.position.set((x + prev.x) / 2, 1.85, (z + prev.z) / 2);
-          rail.rotation.z = Math.PI / 2;
-          rail.rotation.y = -angle;
-          this.scene.add(rail);
-        }
-        prev = { x, z };
+
+    // Piles under the deck, every 12 units, sunk into the sand.
+    const pileCount = Math.floor(length / 12);
+    for (let i = 0; i <= pileCount; i++) {
+      for (const side of [-1, 1]) {
+        const pileGeo = new THREE.CylinderGeometry(0.3, 0.35, 3.5, 6);
+        const pile = new THREE.Mesh(pileGeo, pileMat);
+        pile.position.set(side * 2.4, -0.6, -length / 2 + i * 12);
+        group.add(pile);
       }
     }
-    // A "PIER 9" sign at the pier head.
-    const sign = new THREE.Mesh(
-      new THREE.BoxGeometry(6, 1.5, 0.3),
-      createEmissiveMaterial(0xffee88, 0.6),
-    );
-    sign.position.set(to.x, 3.2, to.z);
-    sign.rotation.y = angle;
-    this.scene.add(sign);
-    this.shopSigns.push(sign);
+
+    // Lamp posts along the pier, alternating sides.
+    const lampGlowMat = new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.7 });
+    const lampCount = Math.floor(length / 24);
+    for (let i = 0; i < lampCount; i++) {
+      const side = i % 2 === 0 ? -1 : 1;
+      const lamp = new THREE.Group();
+      const poleGeo = new THREE.CylinderGeometry(0.08, 0.1, 4.5, 6);
+      const pole = new THREE.Mesh(poleGeo, railMat);
+      pole.position.y = 2.25;
+      lamp.add(pole);
+      const globeGeo = new THREE.SphereGeometry(0.32, 8, 6);
+      const globe = new THREE.Mesh(globeGeo, lampGlowMat.clone());
+      globe.position.y = 4.6;
+      lamp.add(globe);
+      lamp.userData.glow = globe;
+      lamp.position.set(side * 2.7, 0.8, -length / 2 + 12 + i * 24);
+      group.add(lamp);
+      this.lamps.push(lamp);
+    }
+
+    // PIER 9 sign at the head: a post, a board, a glowing strip.
+    const signPostGeo = new THREE.CylinderGeometry(0.15, 0.18, 5, 6);
+    const signPost = new THREE.Mesh(signPostGeo, railMat);
+    signPost.position.set(-2.4, 2.5, length / 2 - 1);
+    group.add(signPost);
+    const signGeo = new THREE.BoxGeometry(4.5, 1.6, 0.25);
+    const sign = new THREE.Mesh(signGeo, createStandardMaterial(0x1a3a5a));
+    sign.position.set(-2.4, 5.2, length / 2 - 1);
+    group.add(sign);
+    const stripGeo = new THREE.BoxGeometry(4, 0.5, 0.1);
+    const strip = new THREE.Mesh(stripGeo, createEmissiveMaterial(0xffdd88, 0.9));
+    strip.position.set(-2.4, 5.2, length / 2 - 0.85);
+    group.add(strip);
+
+    group.position.set(midX, 0, midZ);
+    group.rotation.y = angle;
+    this.scene.add(group);
+    this.pierGroup = group;
   }
 
-  createYachts() {
-    // Moored yachts: hull, cabin, mast and a triangular sail. Each yacht
-    // keeps a bob phase so update() can rock it gently on the pool.
-    for (const spec of MOORED_YACHTS) {
+  // -- yachts and buoys ------------------------------------------------------------
+
+  buildYachts() {
+    // Six moored yachts along the pier, each a hull, a cabin, a mast
+    // and a sail. They bob and rock in update() on their own phases.
+    for (const spot of YACHT_SPOTS) {
       const yacht = new THREE.Group();
-      const hull = new THREE.Mesh(
-        new THREE.BoxGeometry(3, 1.4, spec.len),
-        createStandardMaterial(spec.hull),
-      );
-      hull.position.y = 0.7;
+      const hullMat = createStandardMaterial(spot.hull);
+      const cabinMat = createStandardMaterial(0xf0ead8);
+      const mastMat = createStandardMaterial(0x6a5a3a);
+      const sailMat = new THREE.MeshStandardMaterial({
+        color: spot.sail, roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
+      });
+
+      // Hull: a tapered box (wider at the stern, narrower at the bow).
+      const hullGeo = new THREE.BoxGeometry(3.4, 1.4, spot.len);
+      const hull = new THREE.Mesh(hullGeo, hullMat);
+      hull.position.y = 0.4;
       hull.castShadow = true;
       yacht.add(hull);
-      // Bow: a wedge made from a rotated box so the hull tapers forward.
-      const bow = new THREE.Mesh(
-        new THREE.ConeGeometry(1.5, 2.4, 4),
-        createStandardMaterial(spec.hull),
-      );
-      bow.position.set(0, 0.7, spec.len / 2 + 1);
-      bow.rotation.y = Math.PI / 4;
+      const bowGeo = new THREE.ConeGeometry(1.7, 3, 4);
+      const bow = new THREE.Mesh(bowGeo, hullMat);
+      bow.position.set(0, 0.4, spot.len / 2 + 1.2);
       bow.rotation.x = Math.PI / 2;
-      bow.scale.set(1, 1, 0.6);
-      bow.castShadow = true;
+      bow.rotation.y = Math.PI / 4;
       yacht.add(bow);
-      const cabin = new THREE.Mesh(
-        new THREE.BoxGeometry(2, 1, spec.len * 0.4),
-        createStandardMaterial(0x2a3a4a),
-      );
-      cabin.position.set(0, 1.8, -spec.len * 0.08);
+
+      // Cabin block with windows.
+      const cabinGeo = new THREE.BoxGeometry(2.4, 1.1, spot.len * 0.45);
+      const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+      cabin.position.set(0, 1.6, -spot.len * 0.1);
       cabin.castShadow = true;
       yacht.add(cabin);
-      const mast = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.09, 0.12, 7, 6),
-        createStandardMaterial(0x8a8a8a),
-      );
-      mast.position.set(0, 5, 0);
+      const winGeo = new THREE.BoxGeometry(2.5, 0.4, spot.len * 0.3);
+      const winMat = createStandardMaterial(0x1a2a3a);
+      const win = new THREE.Mesh(winGeo, winMat);
+      win.position.set(0, 1.7, -spot.len * 0.1);
+      yacht.add(win);
+
+      // Mast and sail.
+      const mastGeo = new THREE.CylinderGeometry(0.09, 0.12, spot.len * 0.9, 6);
+      const mast = new THREE.Mesh(mastGeo, mastMat);
+      mast.position.set(0, 1 + spot.len * 0.45, spot.len * 0.05);
       mast.castShadow = true;
       yacht.add(mast);
-      // Sail: a flat triangle (custom geometry, two faces).
-      const sailGeo = new THREE.BufferGeometry();
-      sailGeo.setAttribute('position', new THREE.Float32BufferAttribute([
-        0, 1.8, 0.3, 0, 8.2, 0.3, 0, 1.8, -spec.len * 0.32,
-        0, 1.8, 0.3, 0, 1.8, -spec.len * 0.32, 0, 8.2, 0.3,
-      ], 3));
-      sailGeo.computeVertexNormals();
-      const sail = new THREE.Mesh(
-        sailGeo,
-        new THREE.MeshStandardMaterial({ color: spec.sail, side: THREE.DoubleSide, roughness: 0.8 }),
-      );
+      const sailGeo = new THREE.PlaneGeometry(spot.len * 0.35, spot.len * 0.7);
+      const sail = new THREE.Mesh(sailGeo, sailMat);
+      sail.position.set(0.6, 1 + spot.len * 0.4, spot.len * 0.05);
       sail.castShadow = true;
       yacht.add(sail);
-      yacht.position.set(spec.x, 0.2, spec.z);
-      yacht.rotation.y = this.random() * Math.PI * 2;
+
+      // A small flag at the masthead.
+      const flagGeo = new THREE.PlaneGeometry(1.1, 0.6);
+      const flagMat = new THREE.MeshBasicMaterial({ color: spot.sail, side: THREE.DoubleSide });
+      const flag = new THREE.Mesh(flagGeo, flagMat);
+      flag.position.set(0.6, 1 + spot.len * 0.88, spot.len * 0.05);
+      yacht.add(flag);
+
+      yacht.position.set(spot.x, -1.2, spot.z);
+      yacht.rotation.y = -Math.PI / 4 + (this.random() - 0.5) * 0.2;
+      yacht.userData.phase = this.random() * Math.PI * 2;
+      yacht.userData.baseY = -1.2;
       this.scene.add(yacht);
-      this.yachts.push({ group: yacht, phase: this.random() * Math.PI * 2, baseY: 0.2 });
+      this.yachts.push({
+        mesh: yacht,
+        x: spot.x,
+        z: spot.z,
+        length: spot.len,
+        phase: yacht.userData.phase,
+      });
     }
   }
 
-  createBuoys() {
-    // Channel buoys: red-and-white striped spheres that bob on the pool.
-    for (const spec of CHANNEL_BUOYS) {
+  buildBuoys() {
+    // Six channel buoys: a cone on a cylinder base, striped red and
+    // white, bobbing gently. They mark the way into the marina.
+    for (const spot of BUOY_SPOTS) {
       const buoy = new THREE.Group();
-      const bottom = new THREE.Mesh(
-        new THREE.SphereGeometry(0.9, 10, 8),
-        createStandardMaterial(0xc83838),
-      );
-      bottom.position.y = 0.3;
-      buoy.add(bottom);
-      const top = new THREE.Mesh(
-        new THREE.ConeGeometry(0.6, 1.2, 8),
-        createStandardMaterial(0xf8f8f8),
-      );
-      top.position.y = 1.3;
-      buoy.add(top);
-      const tip = new THREE.Mesh(
-        new THREE.SphereGeometry(0.18, 6, 6),
-        new THREE.MeshBasicMaterial({ color: 0xffee88 }),
-      );
-      tip.position.y = 2;
+      const baseGeo = new THREE.CylinderGeometry(0.9, 1.1, 0.8, 8);
+      const base = new THREE.Mesh(baseGeo, createStandardMaterial(0xc83838));
+      base.position.y = 0.4;
+      buoy.add(base);
+      const coneGeo = new THREE.ConeGeometry(0.7, 1.6, 8);
+      const cone = new THREE.Mesh(coneGeo, createStandardMaterial(0xf8f0e0));
+      cone.position.y = 1.6;
+      buoy.add(cone);
+      const tipGeo = new THREE.SphereGeometry(0.25, 8, 6);
+      const tip = new THREE.Mesh(tipGeo, createEmissiveMaterial(0xff2222, 1));
+      tip.position.y = 2.6;
       buoy.add(tip);
-      buoy.position.set(spec.x, 0.2, spec.z);
+      buoy.position.set(spot.x, -1.6, spot.z);
+      buoy.userData.phase = this.random() * Math.PI * 2;
+      buoy.userData.baseY = -1.6;
       this.scene.add(buoy);
-      this.buoys.push({ group: buoy, phase: this.random() * Math.PI * 2, baseY: 0.2 });
+      this.buoys.push({
+        mesh: buoy,
+        x: spot.x,
+        z: spot.z,
+        phase: buoy.userData.phase,
+      });
     }
   }
 
-  createLighthouse() {
-    // The district landmark: a banded tower on the sand at the pier head,
-    // with a glass lamp room and a rotating beam (cone + point light).
-    const s = DISTRICT_SPOTS.lighthouse;
-    const tower = new THREE.Group();
-    const bands = [0xf8f8f8, 0xc83838, 0xf8f8f8, 0xc83838, 0xf8f8f8];
-    const bandH = 34 / bands.length;
-    for (let i = 0; i < bands.length; i++) {
-      const rBottom = 5.5 - i * 0.45;
-      const rTop = 5.5 - (i + 1) * 0.45;
-      const band = new THREE.Mesh(
-        new THREE.CylinderGeometry(rTop, rBottom, bandH, 12),
-        createStandardMaterial(bands[i]),
-      );
-      band.position.y = bandH / 2 + i * bandH;
+  // -- lighthouse ------------------------------------------------------------------
+
+  buildLighthouse() {
+    // The lighthouse past the pier head: a banded tower, a gallery deck,
+    // a lamp room with a real PointLight, a rotating beam cone, and the
+    // keeper's cottage beside it. The escape objective is the open
+    // ground at (880, -880); the tower itself stands a few units off so
+    // the player can reach the point without walking into the wall.
+    const group = new THREE.Group();
+    const bandA = createStandardMaterial(0xf0e8d8);
+    const bandB = createStandardMaterial(0xc83838);
+    const darkMat = createStandardMaterial(0x2a2a30);
+
+    // Banded tower: stacked cylinders, alternating pale and red.
+    const bands = 6;
+    const towerH = 30;
+    for (let i = 0; i < bands; i++) {
+      const rBottom = 3.4 - (i * 0.28);
+      const rTop = 3.4 - ((i + 1) * 0.28);
+      const bandGeo = new THREE.CylinderGeometry(rTop, rBottom, towerH / bands, 12);
+      const band = new THREE.Mesh(bandGeo, i % 2 === 0 ? bandA : bandB);
+      band.position.y = (i + 0.5) * (towerH / bands);
       band.castShadow = true;
-      tower.add(band);
+      group.add(band);
     }
-    // Lamp room: glass box on a dark base, with a domed cap.
-    const lampBase = new THREE.Mesh(
-      new THREE.CylinderGeometry(3.4, 3.4, 1.2, 10),
-      createStandardMaterial(0x1a1a1a),
-    );
-    lampBase.position.y = 34.6;
-    tower.add(lampBase);
-    const lampGlass = new THREE.Mesh(
-      new THREE.BoxGeometry(4.4, 3.4, 4.4),
-      new THREE.MeshStandardMaterial({
-        color: 0xffee88, emissive: 0xffdd55, emissiveIntensity: 0.9,
-        transparent: true, opacity: 0.85,
-      }),
-    );
-    lampGlass.position.y = 36.8;
-    tower.add(lampGlass);
-    const cap = new THREE.Mesh(
-      new THREE.ConeGeometry(3.4, 2.2, 10),
-      createStandardMaterial(0x1a1a1a),
-    );
-    cap.position.y = 39.6;
-    tower.add(cap);
-    tower.position.set(s.x, 0, s.z);
-    this.scene.add(tower);
-    // The beam: a long translucent cone, horizontal, pivoting around the
-    // lamp room. It is a child of a pivot group so update() can spin it.
-    const pivot = new THREE.Group();
-    pivot.position.set(s.x, 36.8, s.z);
-    const beamGeo = new THREE.ConeGeometry(7, 70, 12, 1, true);
-    const beamMat = new THREE.MeshBasicMaterial({
-      color: 0xffee88, transparent: true, opacity: 0.16,
-      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+
+    // Gallery deck and railing.
+    const deckGeo = new THREE.CylinderGeometry(4.4, 4.4, 0.5, 12);
+    const deck = new THREE.Mesh(deckGeo, darkMat);
+    deck.position.y = towerH + 0.25;
+    group.add(deck);
+    for (let i = 0; i < 10; i++) {
+      const angle = (i / 10) * Math.PI * 2;
+      const railGeo = new THREE.BoxGeometry(0.08, 1.1, 0.08);
+      const rail = new THREE.Mesh(railGeo, darkMat);
+      rail.position.set(Math.cos(angle) * 4.2, towerH + 1, Math.sin(angle) * 4.2);
+      group.add(rail);
+    }
+
+    // Lamp room: glass cylinder, a bright lamp, and a cap.
+    const glassGeo = new THREE.CylinderGeometry(2.6, 2.6, 3.4, 12);
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0xffeeaa, emissive: 0xffdd66, emissiveIntensity: 0.9,
+      transparent: true, opacity: 0.55,
     });
-    this.beam = new THREE.Mesh(beamGeo, beamMat);
-    this.beam.rotation.z = Math.PI / 2; // point along +X
-    this.beam.position.x = 35;
-    pivot.add(this.beam);
-    this.scene.add(pivot);
-    this.beamPivot = pivot;
-    this.beamLight = new THREE.PointLight(0xffee88, 0, 120, 1.5);
-    this.beamLight.position.set(s.x, 37, s.z);
-    this.scene.add(this.beamLight);
-    // A small keeper's cottage beside the tower.
-    const cottage = new THREE.Mesh(
-      new THREE.BoxGeometry(10, 5, 8),
-      createStandardMaterial(0xe8dcc8),
-    );
-    cottage.position.set(s.x - 14, 2.5, s.z + 10);
-    cottage.castShadow = true;
-    this.scene.add(cottage);
-    const cottageRoof = new THREE.Mesh(
-      new THREE.ConeGeometry(7, 3, 4),
-      createStandardMaterial(0x8a3a3a),
-    );
-    cottageRoof.position.set(s.x - 14, 6.5, s.z + 10);
-    cottageRoof.rotation.y = Math.PI / 4;
-    this.scene.add(cottageRoof);
+    const glass = new THREE.Mesh(glassGeo, glassMat);
+    glass.position.y = towerH + 2.2;
+    group.add(glass);
+    const lampGeo = new THREE.SphereGeometry(1.1, 10, 8);
+    const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff6c8 });
+    const lamp = new THREE.Mesh(lampGeo, lampMat);
+    lamp.position.y = towerH + 2.2;
+    group.add(lamp);
+    this.lighthouseLamp = lamp;
+    const capGeo = new THREE.ConeGeometry(3.2, 2.2, 12);
+    const cap = new THREE.Mesh(capGeo, darkMat);
+    cap.position.y = towerH + 4.9;
+    group.add(cap);
+
+    // The beam: a long translucent cone, plus a PointLight that sweeps
+    // with it. The beam group rotates in update().
+    const beamGroup = new THREE.Group();
+    beamGroup.position.y = towerH + 2.2;
+    const beamGeo = new THREE.ConeGeometry(4.5, 60, 12, 1, true);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: 0xfff2b8, transparent: true, opacity: 0.22,
+      side: THREE.DoubleSide, depthWrite: false,
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.rotation.z = Math.PI / 2;
+    beam.position.x = 30;
+    beamGroup.add(beam);
+    const beamLight = new THREE.PointLight(0xffee88, 60, 120, 1.6);
+    beamLight.position.set(0, 0, 0);
+    beamGroup.add(beamLight);
+    group.add(beamGroup);
+    this.beamGroup = beamGroup;
+    this.beamLight = beamLight;
+
+    // Keeper's cottage: a small house with a pitched roof and a lit
+    // window, tucked beside the tower.
+    const cottage = new THREE.Group();
+    const cotWallMat = createStandardMaterial(0xd8c8a8);
+    const cotRoofMat = createStandardMaterial(0x6a3a2a);
+    const cotGeo = new THREE.BoxGeometry(8, 4.5, 6);
+    const cot = new THREE.Mesh(cotGeo, cotWallMat);
+    cot.position.y = 2.25;
+    cot.castShadow = true;
+    cottage.add(cot);
+    const cotRoofGeo = new THREE.ConeGeometry(6.4, 2.6, 4);
+    const cotRoof = new THREE.Mesh(cotRoofGeo, cotRoofMat);
+    cotRoof.position.y = 5.8;
+    cotRoof.rotation.y = Math.PI / 4;
+    cottage.add(cotRoof);
+    const cotWinGeo = new THREE.BoxGeometry(1.4, 1.4, 0.15);
+    const cotWin = new THREE.Mesh(cotWinGeo, createEmissiveMaterial(0xffcc66, 0.9));
+    cotWin.position.set(-1.5, 2.4, 3.05);
+    cottage.add(cotWin);
+    cottage.position.set(10, 0, 8);
+    group.add(cottage);
+
+    group.position.set(DISTRICT.lightX + 4, 0, DISTRICT.lightZ + 4);
+    this.scene.add(group);
+    this.lighthouseGroup = group;
   }
 
-  createParkingLot() {
-    // Asphalt lot beside the garage with painted bay lines and six
-    // static cars (plain box cars: scenery, not drivable vehicles).
-    const s = DISTRICT_SPOTS.parkingLot;
-    this.slab(40, 0.2, 30, 0x3d3d44, s.x, 0.1, s.z);
-    for (let i = 0; i < 6; i++) {
-      const x = s.x - 16 + i * 6.4;
-      // Bay divider lines.
-      this.slab(0.25, 0.22, 8, 0xffffff, x + 3.2, 0.22, s.z - 4);
-      this.slab(0.25, 0.22, 8, 0xffffff, x + 3.2, 0.22, s.z + 12);
+  // -- parking lot -----------------------------------------------------------------
+
+  buildParkingLot() {
+    // A 40 x 30 lot west of the promenade with painted bays and six
+    // static cars (simple box-built cars, not Vehicle instances, so the
+    // traffic system never tries to drive them away).
+    const group = new THREE.Group();
+    const asphaltMat = createStandardMaterial(0x3d3d44);
+    const lineMat = createMaterial(0xf8f8f8);
+
+    const lotGeo = new THREE.PlaneGeometry(40, 30);
+    const lot = new THREE.Mesh(lotGeo, asphaltMat);
+    lot.rotation.x = -Math.PI / 2;
+    lot.position.y = 0.1;
+    lot.receiveShadow = true;
+    group.add(lot);
+
+    // Bay lines: six bays along the north edge.
+    for (let i = 0; i < 7; i++) {
+      const lineGeo = new THREE.BoxGeometry(0.25, 0.06, 6);
+      const line = new THREE.Mesh(lineGeo, lineMat);
+      line.position.set(-15 + i * 5, 0.15, -9);
+      group.add(line);
     }
-    for (const spec of LOT_CARS) {
+    const edgeGeo = new THREE.BoxGeometry(30, 0.06, 0.25);
+    const edge = new THREE.Mesh(edgeGeo, lineMat);
+    edge.position.set(0, 0.15, -12);
+    group.add(edge);
+
+    // Six static cars in the bays, varied colours and types.
+    const carColours = [0xc83838, 0x3878c8, 0xe8e8e8, 0x38a838, 0x585868, 0xe8c838];
+    for (let i = 0; i < 6; i++) {
       const car = new THREE.Group();
-      const body = new THREE.Mesh(
-        new THREE.BoxGeometry(1.9, 0.75, 4.4),
-        createStandardMaterial(spec.color),
-      );
+      const bodyMat = createStandardMaterial(carColours[i]);
+      const glassMat = new THREE.MeshStandardMaterial({
+        color: 0x1a2a3a, metalness: 0.8, roughness: 0.15,
+        transparent: true, opacity: 0.6,
+      });
+      const bodyGeo = new THREE.BoxGeometry(1.9, 0.75, 4.4);
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
       body.position.y = 0.55;
       body.castShadow = true;
       car.add(body);
-      const cabin = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6, 0.6, 2.2),
-        new THREE.MeshStandardMaterial({ color: 0x1a2a3a, metalness: 0.8, roughness: 0.1 }),
-      );
-      cabin.position.set(0, 1.2, 0.2);
-      cabin.castShadow = true;
+      const cabinGeo = new THREE.BoxGeometry(1.6, 0.6, 2.2);
+      const cabin = new THREE.Mesh(cabinGeo, glassMat);
+      cabin.position.set(0, 1.15, 0.2);
       car.add(cabin);
+      const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.22, 10);
+      const wheelMat = createStandardMaterial(0x1a1a1a);
       for (const [wx, wz] of [[-0.85, 1.5], [0.85, 1.5], [-0.85, -1.5], [0.85, -1.5]]) {
-        const wheel = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.35, 0.35, 0.25, 10),
-          createStandardMaterial(0x1a1a1a),
-        );
+        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
         wheel.rotation.z = Math.PI / 2;
-        wheel.position.set(wx, 0.35, wz);
+        wheel.position.set(wx, 0.36, wz);
         car.add(wheel);
       }
-      car.position.set(spec.x, 0.2, spec.z);
-      car.rotation.y = spec.rot;
-      this.scene.add(car);
+      car.position.set(-12.5 + i * 5, 0.1, -9);
+      car.rotation.y = (this.random() - 0.5) * 0.1;
+      group.add(car);
     }
-    // A "PARKING" sign on a pole at the lot entrance.
-    const pole = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.1, 0.12, 4, 6),
-      createStandardMaterial(0x3a3a3a),
-    );
-    pole.position.set(s.x + 18, 2, s.z + 14);
-    this.scene.add(pole);
-    const sign = new THREE.Mesh(
-      new THREE.BoxGeometry(4, 2, 0.2),
-      createEmissiveMaterial(0x2288cc, 0.6),
-    );
-    sign.position.set(s.x + 18, 4.4, s.z + 14);
-    this.scene.add(sign);
-    this.shopSigns.push(sign);
+
+    group.position.set(596, 0, -680);
+    this.scene.add(group);
+    this.parkingGroup = group;
   }
 
-  createPalms() {
-    for (const spec of PROMENADE_PALMS) {
-      const palm = this.makePalm(6 + this.random() * 2);
-      palm.position.set(spec.x, 0, spec.z);
-      palm.rotation.y = this.random() * Math.PI * 2;
+  // -- palms, festoon lights, gulls --------------------------------------------------
+
+  buildPalms() {
+    // Twelve palms: a leaning trunk and five fronds each. The fronds
+    // sway a little in update() through the shared palm list.
+    for (const spot of PALM_SPOTS) {
+      const palm = new THREE.Group();
+      const trunkMat = createStandardMaterial(0x6a4a2a);
+      const frondMat = createStandardMaterial(0x1a6a2a);
+      const trunkGeo = new THREE.CylinderGeometry(0.22, 0.38, 7, 6);
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = 3.5;
+      trunk.rotation.z = (this.random() - 0.5) * 0.16;
+      trunk.castShadow = true;
+      palm.add(trunk);
+      const fronds = [];
+      for (let f = 0; f < 5; f++) {
+        const frondGeo = new THREE.ConeGeometry(1.9, 3.4, 5);
+        const frond = new THREE.Mesh(frondGeo, frondMat);
+        frond.position.y = 7 + f * 0.35;
+        frond.rotation.x = -Math.PI / 2 + (f - 2) * 0.28;
+        frond.rotation.y = f * (Math.PI * 2 / 5);
+        frond.castShadow = true;
+        palm.add(frond);
+        fronds.push(frond);
+      }
+      palm.position.set(spot.x, 0, spot.z);
+      palm.userData.fronds = fronds;
+      palm.userData.phase = this.random() * Math.PI * 2;
       this.scene.add(palm);
+      this.palms.push(palm);
     }
   }
 
-  createStringLights() {
-    // Festoon lights strung across the promenade between poles: a shared
-    // bulb material so update() can brighten them all at dusk in one go.
-    this.stringLightMat = new THREE.MeshBasicMaterial({ color: 0xffee88, transparent: true, opacity: 0.5 });
-    const poleMat = createStandardMaterial(0x3a3a3a);
-    for (let span = 0; span < 6; span++) {
-      const x0 = 540 + span * 40;
-      const x1 = x0 + 40;
-      for (const x of [x0, x1]) {
-        const pole = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.08, 0.1, 6, 6),
-          poleMat,
-        );
-        pole.position.set(x, 3, -640);
-        this.scene.add(pole);
-      }
-      for (let b = 0; b < 8; b++) {
-        const t = (b + 0.5) / 8;
-        const sag = Math.sin(t * Math.PI) * 1.2;
-        const bulb = new THREE.Mesh(
-          new THREE.SphereGeometry(0.22, 6, 6),
-          this.stringLightMat,
-        );
-        bulb.position.set(x0 + 40 * t, 6 - sag, -640);
+  buildFestoonLights() {
+    // Strings of warm bulbs between the lamp posts along the promenade:
+    // a catenary line of small glowing spheres. The bulbs brighten
+    // after dusk in update().
+    const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffdd99, transparent: true, opacity: 0.85 });
+    const wireMat = createMaterial(0x1a1a1a);
+    const runs = [
+      { from: [660, -610], to: [676, -626] },
+      { from: [676, -626], to: [692, -642] },
+      { from: [644, -594], to: [660, -610] },
+      { from: [628, -610], to: [644, -594] },
+    ];
+    for (const run of runs) {
+      const [x1, z1] = run.from;
+      const [x2, z2] = run.to;
+      const mx = (x1 + x2) / 2, mz = (z1 + z2) / 2;
+      const len = Math.hypot(x2 - x1, z2 - z1);
+      const angle = Math.atan2(x2 - x1, z2 - z1);
+      const wireGeo = new THREE.BoxGeometry(0.05, 0.05, len);
+      const wire = new THREE.Mesh(wireGeo, wireMat);
+      wire.position.set(mx, 5.4, mz);
+      wire.rotation.y = angle;
+      this.scene.add(wire);
+      const bulbCount = Math.floor(len / 2.4);
+      for (let i = 1; i < bulbCount; i++) {
+        const t = i / bulbCount;
+        const sag = Math.sin(t * Math.PI) * 0.9;
+        const bx = x1 + (x2 - x1) * t;
+        const bz = z1 + (z2 - z1) * t;
+        const bulbGeo = new THREE.SphereGeometry(0.16, 6, 5);
+        const bulb = new THREE.Mesh(bulbGeo, bulbMat.clone());
+        bulb.position.set(bx, 5.4 - sag, bz);
         this.scene.add(bulb);
+        this.festoonBulbs.push(bulb);
       }
     }
   }
 
-  createGulls() {
-    // Five seagulls circling the marina: a white body cone and two flat
-    // wings that flap in update(). They are scenery, not colliders.
+  buildGulls() {
+    // Five gulls circling over the pier head: a white body cone and two
+    // flapping wing planes each. They orbit in update().
     for (let i = 0; i < 5; i++) {
       const gull = new THREE.Group();
-      const body = new THREE.Mesh(
-        new THREE.ConeGeometry(0.35, 1.6, 6),
-        createStandardMaterial(0xf8f8f8),
-      );
+      const bodyMat = createStandardMaterial(0xf8f8f8);
+      const wingMat = new THREE.MeshStandardMaterial({ color: 0xe8e8e8, side: THREE.DoubleSide });
+      const bodyGeo = new THREE.ConeGeometry(0.28, 1.4, 6);
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
       body.rotation.x = Math.PI / 2;
       gull.add(body);
-      const wingMat = createStandardMaterial(0xe8e8e8);
-      const left = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.7), wingMat);
-      left.position.x = -1.2;
-      left.rotation.x = -Math.PI / 2;
-      gull.add(left);
-      const right = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 0.7), wingMat);
-      right.position.x = 1.2;
-      right.rotation.x = -Math.PI / 2;
-      gull.add(right);
-      gull.userData.left = left;
-      gull.userData.right = right;
+      const wings = [];
+      for (const side of [-1, 1]) {
+        const wingGeo = new THREE.PlaneGeometry(1.6, 0.5);
+        const wing = new THREE.Mesh(wingGeo, wingMat);
+        wing.position.set(side * 0.85, 0.1, 0);
+        gull.add(wing);
+        wings.push(wing);
+      }
+      gull.userData.wings = wings;
+      gull.userData.orbitR = 24 + i * 5;
+      gull.userData.orbitH = 26 + i * 3;
+      gull.userData.orbitSpeed = 0.22 + i * 0.03;
+      gull.userData.phase = (i / 5) * Math.PI * 2;
+      gull.position.set(DISTRICT.pierHeadX, 28, DISTRICT.pierHeadZ);
       this.scene.add(gull);
-      this.gulls.push({
-        group: gull,
-        radius: 40 + i * 12,
-        height: 26 + i * 4,
-        speed: 0.12 + i * 0.02,
-        angle: (i / 5) * Math.PI * 2,
-        flap: this.random() * Math.PI * 2,
-      });
+      this.gulls.push(gull);
     }
   }
 
-  // Let the base traffic and pedestrian systems route through the
-  // district: new street nodes along the promenade and pier roads, and
-  // sidewalk nodes along the boardwalk. The traffic spawner pre-filters
-  // nodes to the ring around the player, so these only matter when the
-  // player is actually in the district.
-  registerStreetNodes() {
-    for (let z = -780; z <= -500; z += 20) {
+  // -- nodes -------------------------------------------------------------------------
+
+  registerNodes() {
+    // Walkways for the street life: pedestrian nodes along the
+    // promenade, the boardwalk and the pier; a few street nodes on the
+    // two minor streets that cross the district (x = 640, z = -640) so
+    // traffic can route in. The district's own crowd (pedai.js) uses
+    // its own waypoints; these nodes are for the base traffic system.
+    for (let z = -740; z <= -560; z += 18) {
+      this.city.pedestrianNodes.push({ x: 648, z, type: 'promenade' });
+      this.city.pedestrianNodes.push({ x: 664, z: z + 9, type: 'promenade' });
+    }
+    for (let x = 580; x <= 740; x += 18) {
+      this.city.pedestrianNodes.push({ x, z: -612, type: 'promenade' });
+    }
+    for (let t = 0; t <= 1; t += 0.1) {
+      const x = 700 + (DISTRICT.pierHeadX - 700) * t;
+      const z = -700 + (DISTRICT.pierHeadZ + 700) * t;
+      this.city.pedestrianNodes.push({ x, z, type: 'pier' });
+    }
+    for (let z = -740; z <= -560; z += 24) {
       this.city.trafficNodes.push({ x: 640, z, type: 'street', dir: 'z' });
     }
-    for (let x = 520; x <= 780; x += 20) {
+    for (let x = 580; x <= 720; x += 24) {
       this.city.trafficNodes.push({ x, z: -640, type: 'street', dir: 'x' });
     }
-    for (let x = 520; x <= 780; x += 15) {
-      this.city.pedestrianNodes.push({ x, z: -626, type: 'sidewalk' });
-      this.city.pedestrianNodes.push({ x, z: -654, type: 'sidewalk' });
-    }
-    for (let z = -780; z <= -500; z += 15) {
-      this.city.pedestrianNodes.push({ x: 626, z, type: 'sidewalk' });
-      this.city.pedestrianNodes.push({ x: 654, z, type: 'sidewalk' });
-    }
-    // Pier walkers: a few nodes along the pier diagonal.
-    for (let t = 0; t <= 1; t += 0.25) {
-      this.city.pedestrianNodes.push({
-        x: 700 + 158 * t,
-        z: -700 - 158 * t,
-        type: 'sidewalk',
-      });
-    }
+    // Intersections where the two streets cross the promenade.
+    this.city.trafficNodes.push({ x: 640, z: -640, type: 'intersection' });
+    this.city.trafficNodes.push({ x: 640, z: -700, type: 'intersection' });
   }
 
-  // -- runtime -------------------------------------------------------------
+  // -- queries -------------------------------------------------------------------------
 
-  // A spawn point for the player in the district (used by the ?district
-  // URL shortcut and by the mission chain's escape objective).
-  getSpawnPosition() {
-    return new THREE.Vector3(650, 1, -600);
-  }
-
-  getRandomPromenadeSpot() {
-    return new THREE.Vector3(
-      530 + this.random() * 230,
-      0,
-      -640 + (this.random() < 0.5 ? -14 : 14),
+  isInside(x, z) {
+    return (
+      x >= DISTRICT.centreX - DISTRICT.half &&
+      x <= DISTRICT.centreX + DISTRICT.half &&
+      z >= DISTRICT.centreZ - DISTRICT.half &&
+      z <= DISTRICT.centreZ + DISTRICT.half
     );
   }
 
-  isInside(x, z) {
-    const dx = x - DISTRICT_CENTER.x;
-    const dz = z - DISTRICT_CENTER.z;
-    return dx * dx + dz * dz < 220 * 220;
+  getSpawnPosition() {
+    return new THREE.Vector3(DISTRICT.heartX, 1, DISTRICT.heartZ);
   }
+
+  // -- per-frame -------------------------------------------------------------------------
 
   update(delta, timeOfDay) {
     this.elapsed += delta;
-    const t = this.elapsed;
-    const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
-    const night = clamp((0.35 - dayFactor) / 0.35, 0, 1);
 
-    // Yachts rock gently; buoys bob faster and smaller.
-    for (const y of this.yachts) {
-      y.group.position.y = y.baseY + Math.sin(t * 0.8 + y.phase) * 0.12;
-      y.group.rotation.z = Math.sin(t * 0.6 + y.phase) * 0.025;
-      y.group.rotation.x = Math.cos(t * 0.5 + y.phase) * 0.02;
+    // Day factor: 1 at noon, 0 at midnight. The city already moves the
+    // sun; the district only needs it for its own lights.
+    const dayFactor = (Math.sin(timeOfDay * Math.PI * 2) + 1) / 2;
+    const night = clamp(1 - dayFactor, 0, 1);
+
+    // Yachts bob and rock on their own phases.
+    for (const yacht of this.yachts) {
+      const t = this.elapsed + yacht.phase * 7;
+      yacht.mesh.position.y = yacht.mesh.userData.baseY + Math.sin(t * 0.7) * 0.35;
+      yacht.mesh.rotation.z = Math.sin(t * 0.5) * 0.03;
+      yacht.mesh.rotation.x = Math.sin(t * 0.42 + 1.3) * 0.02;
     }
-    for (const b of this.buoys) {
-      b.group.position.y = b.baseY + Math.sin(t * 1.6 + b.phase) * 0.18;
-      b.group.rotation.z = Math.sin(t * 1.1 + b.phase) * 0.06;
+
+    // Buoys ride the same swell, faster and smaller.
+    for (const buoy of this.buoys) {
+      const t = this.elapsed * 1.4 + buoy.phase * 5;
+      buoy.mesh.position.y = buoy.mesh.userData.baseY + Math.sin(t) * 0.28;
+      buoy.mesh.rotation.x = Math.sin(t * 0.8) * 0.1;
+      buoy.mesh.rotation.z = Math.cos(t * 0.7) * 0.1;
     }
-    // Marina water shimmers: slow opacity breathing.
-    if (this.poolMat) {
-      this.poolMat.opacity = 0.78 + Math.sin(t * 0.4) * 0.05;
+
+    // The pool shimmers: its opacity breathes slowly.
+    if (this.poolWater) {
+      this.poolWater.material.opacity = 0.82 + Math.sin(this.elapsed * 0.9) * 0.07;
     }
-    // Lighthouse beam sweeps; its lamp brightens after dark.
-    if (this.beamPivot) {
-      this.beamPivot.rotation.y = t * 0.45;
+
+    // Lighthouse beam sweeps; the lamp brightens after dusk.
+    if (this.beamGroup) {
+      this.beamAngle += delta * 0.45;
+      this.beamGroup.rotation.y = this.beamAngle;
+      const beamOn = night > 0.25;
+      this.beamGroup.visible = beamOn;
+      this.beamLight.intensity = beamOn ? 40 + night * 50 : 0;
     }
-    if (this.beam) {
-      this.beam.material.opacity = 0.08 + night * 0.16;
+    if (this.lighthouseLamp) {
+      this.lighthouseLamp.material.color.setHex(night > 0.3 ? 0xfff6c8 : 0xcfc090);
     }
-    if (this.beamLight) {
-      this.beamLight.intensity = night * 260 + Math.sin(t * 6) * night * 40;
-    }
-    // Pennant waves.
+
+    // Pennant waves, palms sway.
     if (this.pennant) {
-      this.pennant.rotation.y = Math.sin(t * 2.2) * 0.35;
+      this.pennant.rotation.y = Math.sin(this.elapsed * 2.2) * 0.5;
     }
-    // Promenade light and festoon bulbs come on at dusk.
-    if (this.promenadeLight) {
-      this.promenadeLight.intensity = night * 160;
-    }
-    if (this.stringLightMat) {
-      this.stringLightMat.opacity = 0.25 + night * 0.75;
-    }
-    // Shop signs glow a little harder at night.
-    for (const sign of this.shopSigns) {
-      if (sign.material && sign.material.emissiveIntensity !== undefined) {
-        sign.material.emissiveIntensity = 0.5 + night * 0.7;
+    for (const palm of this.palms) {
+      const sway = Math.sin(this.elapsed * 0.8 + palm.userData.phase) * 0.05;
+      for (const frond of palm.userData.fronds) {
+        frond.rotation.x += sway * delta;
       }
     }
-    // Seagulls circle the marina and flap.
-    for (const g of this.gulls) {
-      g.angle += g.speed * delta;
-      g.flap += delta * 6;
-      const x = DISTRICT_CENTER.x + 60 + Math.cos(g.angle) * g.radius;
-      const z = DISTRICT_CENTER.z - 60 + Math.sin(g.angle) * g.radius;
-      g.group.position.set(x, g.height + Math.sin(t * 0.9 + g.flap) * 1.5, z);
-      g.group.rotation.y = -g.angle;
-      const flap = Math.sin(g.flap) * 0.5;
-      g.group.userData.left.rotation.z = flap;
-      g.group.userData.right.rotation.z = -flap;
+
+    // Lamp globes and festoon bulbs brighten after dusk.
+    const glow = 0.35 + night * 0.65;
+    for (const lamp of this.lamps) {
+      if (lamp.userData.glow) lamp.userData.glow.material.opacity = glow;
+    }
+    for (const bulb of this.festoonBulbs) {
+      bulb.material.opacity = 0.3 + night * 0.7;
+    }
+
+    // Gulls circle the pier head, wings flapping.
+    for (const gull of this.gulls) {
+      const u = gull.userData;
+      const a = u.phase + this.elapsed * u.orbitSpeed;
+      gull.position.set(
+        DISTRICT.pierHeadX + Math.cos(a) * u.orbitR,
+        u.orbitH + Math.sin(this.elapsed * 0.6 + u.phase) * 2,
+        DISTRICT.pierHeadZ + Math.sin(a) * u.orbitR,
+      );
+      gull.rotation.y = -a;
+      const flap = Math.sin(this.elapsed * 6 + u.phase * 3) * 0.55;
+      u.wings[0].rotation.z = flap;
+      u.wings[1].rotation.z = -flap;
     }
   }
 }

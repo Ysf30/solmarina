@@ -502,8 +502,13 @@ export class Vehicle {
     this.speed = 0;
     this.velocity.set(0, 0, 0);
     
-    // Explosion
-    this.audio.playExplosion(this.position);
+    // Explosion (guarded: the traffic audio object carries no
+    // explosion sound, and a missing method must never throw inside
+    // destroy() — a police chase that wrecks a traffic car used to
+    // abort the whole frame with a page error).
+    if (this.audio && typeof this.audio.playExplosion === 'function') {
+      this.audio.playExplosion(this.position);
+    }
     
     // Visual destruction
     this.bodyMesh.material.color.setHex(0x1a1a1a);
