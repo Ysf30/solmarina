@@ -353,6 +353,10 @@ export class Vehicle {
     // target speed would latch acceleration off forever.
     let accel = this.input.accel || 0;
     let brake = this.input.brake || 0;
+    // Garage engine tune (round 5): a tuned car accelerates harder.
+    // tuneAccelMul is 1 for stock cars and up to 1.75 for a Stage 3
+    // race tune fitted at Kade's Garage.
+    const tuneMul = this.tuneAccelMul || 1;
     // Cruise control: when cruiseSpeed is set (e.g. the chase screenshot
     // preset, where no keys are pressed), hold that speed instead of
     // coasting to a stop from rolling resistance. A cruiseDistance cap
@@ -387,7 +391,7 @@ export class Vehicle {
     // Forward/backward force
     let force = 0;
     if (accel > 0) {
-      force = VEHICLE.ACCELERATION * accel;
+      force = VEHICLE.ACCELERATION * accel * tuneMul;
       if (this.speed < 0) force *= 2; // Stronger braking when reversing
     } else if (brake > 0) {
       force = -VEHICLE.BRAKE_FORCE * brake * Math.sign(this.speed || 1);

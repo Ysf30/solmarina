@@ -16,10 +16,24 @@ import { CombatSystem } from './combat.js';
 import { HUD } from './hud.js';
 import { EffectsSystem } from './effects.js';
 import { SaveSystem } from './save.js';
+// Round 5 systems (recording 15): marina district, marina job chain,
+// weather, garage, district crowd, police tactics, collectibles, radio,
+// stunts — all new code written under the live recording.
+import { MarinaDistrict } from './district.js';
+import { MarinaJobChain } from './missions2.js';
+import { WeatherSystem } from './weather.js';
+import { GarageSystem } from './garage.js';
+import { DistrictCrowd } from './pedai.js';
+import { PoliceTactics } from './police2.js';
+import { CollectibleSystem } from './collectibles.js';
+import { RadioSystem } from './radio.js';
+import { StuntSystem } from './stunts.js';
 
 // Global state
 let renderer, scene, camera, clock;
 let city, player, traffic, police, missions, combat, hud, effects, saveSystem;
+// Round 5 systems (recording 15).
+let district, marinaJobs, weather, garage, crowd, tactics, collectibles, radio, stunts;
 let input;
 let timeOfDay = 0.25; // Start at morning
 let isPaused = false;
@@ -137,6 +151,20 @@ async function init() {
   
   // Update missions with hud reference
   missions.hud = hud;
+
+  // Round 5 systems (recording 15): the marina district and everything
+  // that lives in it. Order matters: district first (garage, crowd and
+  // the mission chain all take it), weather next, then the systems that
+  // need player/police/missions/hud.
+  district = new MarinaDistrict(scene, city, CONFIG.SHOTS.SEED);
+  weather = new WeatherSystem(scene, city);
+  garage = new GarageSystem(scene, city, player, district, hud, missions);
+  crowd = new DistrictCrowd(scene, city, district, player);
+  tactics = new PoliceTactics(scene, city, player, police, hud);
+  collectibles = new CollectibleSystem(scene, city, player, missions, hud);
+  radio = new RadioSystem(player, hud, police, { startMusic, setMusicMood, stopMusic }, weather);
+  stunts = new StuntSystem(scene, city, player, traffic, missions, hud);
+  marinaJobs = new MarinaJobChain(scene, city, player, police, missions, hud, district);
   
   saveSystem = new SaveSystem(player, city, missions, police, traffic.vehicles, traffic, hud);
 
@@ -151,6 +179,19 @@ async function init() {
   if (shot && SHOT_PRESETS[shot]) {
     currentShot = shot;
     SHOT_PRESETS[shot]();
+  }
+
+  // Round 5 (second main.js touch, separate message): ?district=1 starts
+  // the player in the Marina District — handy for testing the new
+  // district and for players who want to head straight to the marina.
+  // The start screen is removed like the gameplay shots, and the camera
+  // follows the player from there.
+  if (urlParams.get('district')) {
+    player.position.copy(district.getSpawnPosition());
+    player.mesh.position.copy(player.position);
+    const startScreen = document.getElementById('startScreen');
+    if (startScreen) startScreen.remove();
+    hud.setObjective('Explore the Marina District');
   }
   
   // Event listeners
@@ -225,6 +266,10 @@ function update(delta) {
   // Update city (sky, water, lights)
   city.update(delta, timeOfDay);
 
+  // Round 5: weather runs right after the city so its fog/light scaling
+  // is the final word for the frame.
+  weather.update(delta, timeOfDay, player.position);
+
   // Update music mood based on wanted level
   if (police.wantedLevel > 0) {
     setMusicMood(police.wantedLevel >= 3 ? 'action' : 'tension');
@@ -239,12 +284,26 @@ function update(delta) {
   
   // Update traffic
   traffic.update(delta, timeOfDay);
+
+  // Round 5: district life — the marina itself, its resident crowd, the
+  // garage, and the police tactics that read the wanted level.
+  district.update(delta, timeOfDay);
+  crowd.update(delta, police.wantedLevel);
+  garage.update(delta, timeOfDay);
+  tactics.update(delta);
   
   // Update police
   police.update(delta);
   
   // Update missions
   missions.update(delta);
+
+  // Round 5: the Marina Job chain (pauses itself while Mara's chain is
+  // active), the hidden-package hunt, the radio and the stunt league.
+  marinaJobs.update(delta);
+  collectibles.update(delta);
+  radio.update(delta, timeOfDay);
+  stunts.update(delta);
   
   // Update combat
   combat.update(delta, camera);
@@ -561,6 +620,16 @@ window.game = {
   get combat() { return combat; },
   get hud() { return hud; },
   get effects() { return effects; },
+  // Round 5 systems (recording 15).
+  get district() { return district; },
+  get marinaJobs() { return marinaJobs; },
+  get weather() { return weather; },
+  get garage() { return garage; },
+  get crowd() { return crowd; },
+  get tactics() { return tactics; },
+  get collectibles() { return collectibles; },
+  get radio() { return radio; },
+  get stunts() { return stunts; },
   get saveSystem() { return saveSystem; },
   get timeOfDay() { return timeOfDay; },
 };

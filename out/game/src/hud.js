@@ -22,7 +22,7 @@ export class HUD {
     this.messageText = '';
     this.messageTimer = 0;
     this.timerValue = 0;
-    this.showTimer = false;
+    this.timerVisible = false;
 
     // Create DOM elements
     this.createElements();
@@ -366,7 +366,7 @@ export class HUD {
     }
     
     // Update timer display
-    if (this.showTimer) {
+    if (this.timerVisible) {
       this.timer.textContent = formatTime(this.timerValue);
     }
     
@@ -563,8 +563,8 @@ export class HUD {
   
   showTimer(seconds) {
     this.timerValue = seconds;
-    this.showTimer = seconds > 0;
-    this.timer.style.display = this.showTimer ? 'block' : 'none';
+    this.timerVisible = seconds > 0;
+    this.timer.style.display = this.timerVisible ? 'block' : 'none';
   }
   
   getState() {
