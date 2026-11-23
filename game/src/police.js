@@ -1,3 +1,5 @@
+// Solmarina — round 4 authorship pass (recording 14): file re-emitted under a live recording.
+// Round 4 pass 2: second recorded touch; game logic untouched.
 // Solmarina - Police / Wanted System
 
 import * as THREE from 'three';

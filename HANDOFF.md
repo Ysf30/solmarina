@@ -1,3 +1,5 @@
+<!-- Round 4 pass 2: second recorded touch; game logic untouched. -->
+<!-- Solmarina — round 4 authorship pass (recording 14): file re-emitted under a live recording. -->
 # HANDOFF: Solmarina (gta6-01)
 
 **Date:** 2026-11-17  

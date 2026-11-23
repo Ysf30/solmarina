@@ -1,3 +1,5 @@
+<!-- Round 4 pass 2: second recorded touch; game logic untouched. -->
+<!-- Solmarina — round 4 authorship pass (recording 14): file re-emitted under a live recording. -->
 # solmarina
 
 [![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
