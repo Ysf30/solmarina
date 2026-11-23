@@ -318,25 +318,53 @@ export class City {
       materials.push(roofMat);
     }
     
-    // Windows - create as separate geometry for emissive effect
+    // Windows — one quad per window, slightly proud of each facade, with a
+    // per-window lit/dark color. (This used to be dead code: the loop below
+    // computed lit/dark but never emitted any geometry, so every building
+    // rendered as a flat, windowless slab.)
     const windowGeo = new THREE.BufferGeometry();
     const windowPositions = [];
     const windowColors = [];
-    const windowUVs = [];
-    
-    const windowSize = 1.2;
-    const windowSpacing = 3;
-    const cols = Math.floor(bw / windowSpacing);
-    const rows = Math.floor(height / windowSpacing);
-    const depthCols = Math.floor(bd / windowSpacing);
-    
+
+    const winW = 1.3;
+    const winH = 1.7;
+    const winOut = 0.06; // offset out from the facade so quads never z-fight
+    const rows = Math.min(Math.max(1, Math.floor((height - 4) / 3)), 8);
+    const litColor = new THREE.Color(windowLit);
+    const darkColor = new THREE.Color(windowDark);
+
+    const pushWindowQuad = (mapFn, u0, v0, u1, v1, color) => {
+      // Quad corners in the face plane: (u, v) are the two in-plane axes,
+      // mapFn turns (u, v) into building-local (x, y, z). Two triangles,
+      // 6 vertices, same color on every vertex.
+      const corners = [
+        [u0, v0], [u1, v0], [u1, v1],
+        [u0, v0], [u1, v1], [u0, v1],
+      ];
+      for (const [u, v] of corners) {
+        const p = mapFn(u, v);
+        windowPositions.push(p[0], p[1], p[2]);
+        windowColors.push(color.r, color.g, color.b);
+      }
+    };
+
     for (let side = 0; side < 4; side++) {
+      const faceWidth = side % 2 === 0 ? bw : bd;
+      const cols = Math.min(Math.max(2, Math.floor(faceWidth / 3)), 8);
+      const spacing = faceWidth / cols;
       for (let row = 0; row < rows; row++) {
-        for (let col = 0; col < (side % 2 === 0 ? cols : depthCols); col++) {
-          const lit = hash2D(cx + col * 10, cz + row * 10 + side * 100, this.seed + 1000) > 0.3;
-          const color = lit ? windowLit : windowDark;
-          
-          // We'll use a simple approach - add window quads to main geometry
+        const wy = -height / 2 + 3.2 + row * 3;
+        if (wy + winH / 2 > height / 2 - 1) break;
+        for (let col = 0; col < cols; col++) {
+          const wx = -faceWidth / 2 + spacing * (col + 0.5);
+          const lit = hash2D(cx + col * 10 + side * 37, cz + row * 10 + side * 100, this.seed + 1000) > 0.7;
+          const color = lit ? litColor : darkColor;
+          const u0 = wx - winW / 2, u1 = wx + winW / 2;
+          const v0 = wy - winH / 2, v1 = wy + winH / 2;
+          if (side === 0) pushWindowQuad((u, v) => [u, v, bd / 2 + winOut], u0, v0, u1, v1, color);
+          else if (side === 1) pushWindowQuad((u, v) => [u, v, -(bd / 2 + winOut)], u0, v0, u1, v1, color);
+          else if (side === 2) pushWindowQuad((u, v) => [bw / 2 + winOut, v, u], u0, v0, u1, v1, color);
+          else pushWindowQuad((u, v) => [-(bw / 2 + winOut), v, u], u0, v0, u1, v1, color);
         }
       }
     }
@@ -350,6 +378,20 @@ export class City {
     building.userData = { type: 'building', height, bw, bd };
     this.scene.add(building);
     this.buildings.push(building);
+
+    // Window quads live in their own mesh (MeshBasicMaterial + vertex
+    // colors: dark glass reads as glass in daylight, lit panes glow warm).
+    if (windowPositions.length > 0) {
+      windowGeo.setAttribute('position', new THREE.Float32BufferAttribute(windowPositions, 3));
+      windowGeo.setAttribute('color', new THREE.Float32BufferAttribute(windowColors, 3));
+      windowGeo.computeBoundingSphere();
+      const windowMesh = new THREE.Mesh(
+        windowGeo,
+        new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+      );
+      windowMesh.position.set(cx, height / 2, cz);
+      this.scene.add(windowMesh);
+    }
   }
   
   createSidewalks() {

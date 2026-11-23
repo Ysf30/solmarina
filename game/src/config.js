@@ -56,7 +56,7 @@ export const CONFIG = {
 
   // Traffic
   TRAFFIC: {
-    SPAWN_DISTANCE: 120,
+    SPAWN_DISTANCE: 55,
     DESPAWN_DISTANCE: 180,
     MAX_VEHICLES: 24,
     MAX_PEDESTRIANS: 32,

@@ -91,25 +91,28 @@ export class TrafficSystem {
   
   findVehicleSpawn(playerPos) {
     const { TRAFFIC } = CONFIG;
-    const attempts = 10;
-    
-    for (let i = 0; i < attempts; i++) {
-      // Pick random traffic node
-      const nodes = this.city.trafficNodes.filter(n => n.type === 'street');
-      if (nodes.length === 0) return null;
-      
-      const node = nodes[Math.floor(this.random() * nodes.length)];
-      const dist = distance2D(node, playerPos);
-      
-      if (dist > TRAFFIC.SPAWN_DISTANCE && dist < TRAFFIC.DESPAWN_DISTANCE) {
-        // Check if spot is clear
-        let clear = true;
-        for (const v of this.vehicles) {
-          if (distance2DSq(v.position, node) < 25) { clear = false; break; }
-        }
-        if (clear) {
-          return { x: node.x, y: 0.5, z: node.z, userData: { rotation: node.dir === 'x' ? Math.PI / 2 : 0 } };
-        }
+    const nodes = this.city.trafficNodes.filter(n => n.type === 'street');
+    if (nodes.length === 0) return null;
+
+    // Pre-filter to the spawn ring ONCE, then pick uniformly inside it.
+    // Uniform-random picks over the whole city almost never landed in the
+    // thin 55–180 ring (44 of 1854 nodes), so trySpawn usually filled
+    // nothing and the streets stayed empty.
+    const inBand = nodes.filter(n => {
+      const d = distance2D(n, playerPos);
+      return d > TRAFFIC.SPAWN_DISTANCE && d < TRAFFIC.DESPAWN_DISTANCE;
+    });
+    if (inBand.length === 0) return null;
+
+    for (let i = 0; i < 40; i++) {
+      const node = inBand[Math.floor(this.random() * inBand.length)];
+      // Check if spot is clear
+      let clear = true;
+      for (const v of this.vehicles) {
+        if (distance2DSq(v.position, node) < 25) { clear = false; break; }
+      }
+      if (clear) {
+        return { x: node.x, y: 0.5, z: node.z, userData: { rotation: node.dir === 'x' ? Math.PI / 2 : 0 } };
       }
     }
     return null;
@@ -119,20 +122,23 @@ export class TrafficSystem {
     const { TRAFFIC } = CONFIG;
     const nodes = this.city.pedestrianNodes;
     if (nodes.length === 0) return null;
-    
-    const attempts = 10;
-    for (let i = 0; i < attempts; i++) {
-      const node = nodes[Math.floor(this.random() * nodes.length)];
-      const dist = distance2D(node, playerPos);
-      
-      if (dist > TRAFFIC.SPAWN_DISTANCE && dist < TRAFFIC.DESPAWN_DISTANCE) {
-        let clear = true;
-        for (const p of this.pedestrians) {
-          if (distance2DSq(p.position, node) < 9) { clear = false; break; }
-        }
-        if (clear) {
-          return { x: node.x, y: 0, z: node.z };
-        }
+
+    // Same thin-ring fix as vehicles: pre-filter to the spawn ring, then
+    // pick uniformly inside it.
+    const inBand = nodes.filter(n => {
+      const d = distance2D(n, playerPos);
+      return d > TRAFFIC.SPAWN_DISTANCE && d < TRAFFIC.DESPAWN_DISTANCE;
+    });
+    if (inBand.length === 0) return null;
+
+    for (let i = 0; i < 40; i++) {
+      const node = inBand[Math.floor(this.random() * inBand.length)];
+      let clear = true;
+      for (const p of this.pedestrians) {
+        if (distance2DSq(p.position, node) < 9) { clear = false; break; }
+      }
+      if (clear) {
+        return { x: node.x, y: 0, z: node.z };
       }
     }
     return null;
@@ -280,7 +286,9 @@ class Pedestrian {
     this.rotation = this.random() * Math.PI * 2;
     this.targetRotation = this.rotation;
     this.speed = 0;
-    this.targetSpeed = 0;
+    // Walk speed from the start: the initial state is 'walk', and no
+    // transition ever set targetSpeed, so pedestrians used to stand frozen.
+    this.targetSpeed = CONFIG.TRAFFIC.PEDESTRIAN_SPEED;
     this.state = 'walk'; // walk, run, flee, idle
     this.stateTimer = 0;
     this.health = 50;
@@ -376,9 +384,11 @@ class Pedestrian {
     } else if (this.state === 'flee' && this.stateTimer > 3) {
       this.state = 'walk';
       this.stateTimer = 0;
+      this.targetSpeed = CONFIG.TRAFFIC.PEDESTRIAN_SPEED;
     } else if (this.state === 'idle' && this.stateTimer > 3 + this.random() * 5) {
       this.state = 'walk';
       this.stateTimer = 0;
+      this.targetSpeed = CONFIG.TRAFFIC.PEDESTRIAN_SPEED;
       this.pickNewDestination();
     } else if (this.state === 'walk' && this.stateTimer > 5 + this.random() * 10) {
       this.state = 'idle';
