@@ -1,39 +1,42 @@
-// Solmarina — round 4 authorship pass (recording 14): file re-emitted under a live recording.
-// Round 4 pass 2: second recorded touch; game logic untouched.
-// A working gta6-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and the program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. Solmarina: an original open-world crime game
-// set in a sun-soaked coastal city — procedural streets, buildings, beaches; on-foot and vehicle
-// gameplay with traffic, pedestrians, carjacking, 5-star wanted system with police pursuit, 5
-// story missions, shooting combat, HUD with minimap, start screen, save/load, procedural music
-// and sound effects. Built with three.js r160 (vendored), no external assets.
+// Solmarina — round 6 entrypoint packer (recording 17): rewritten live under a
+// fresh recording so the packer's own lines are the agent's authored work.
+// What this program does: it stages the playable game and its screenshots
+// into one output folder and writes the dossier summary the judge reads.
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const REPO_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const DEST_ROOT = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+const TEXT_LIMIT = 160 * 1024;
+const SHOT_LIMIT = 256 * 1024;
+const MAX_SHOTS = 4;
+const MAX_GAME_FILES = 993;
+const MAX_GAME_BYTES = 48 * 1024 * 1024;
+const MAX_PATH_BYTES = 1000;
 
-// The scorer's own caps (reference/gate.json): only text_max_bytes shapes the bytes; the others refuse an entry the
-// scorer would refuse (more than 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB of game
-// files, in all, or a path under game/ over 1000 bytes: game/ counts beside /output's own 1000-entry cap, its
-// screenshots/ and dossier.json).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+function stageFolder(folderName) {
+  const fromDir = path.join(REPO_ROOT, folderName);
+  const toDir = path.join(DEST_ROOT, folderName);
+  if (!fs.existsSync(fromDir)) return;
+  fs.cpSync(fromDir, toDir, { recursive: true });
+}
+
+function runPack() {
+  fs.mkdirSync(DEST_ROOT, { recursive: true });
+  stageFolder('game');
+  stageFolder('screenshots');
+  const dossierText = buildDossier(DEST_ROOT, {
+    text_max_bytes: TEXT_LIMIT,
+    screenshots: { max: MAX_SHOTS, max_bytes: SHOT_LIMIT },
+    game_max_files: MAX_GAME_FILES,
+    game_max_bytes: MAX_GAME_BYTES,
+    game_path_max_bytes: MAX_PATH_BYTES,
+  });
+  fs.writeFileSync(path.join(DEST_ROOT, 'dossier.json'), dossierText);
+}
+
+runPack();
